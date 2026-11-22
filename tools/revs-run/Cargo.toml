@@ -1,0 +1,26 @@
+[package]
+name = "revs-run"
+version = "0.1.0"
+edition = "2021"
+description = "Runs the recompiled game natively from the user's own .ipa (Phase 3)"
+
+[dependencies]
+revs-analyze = { path = "../revs-analyze" }
+serde_json = "1"
+nibarchive = "0.1.0"
+plist = "1.8.0"
+# PNG read/write for replacement textures (already built for zip)
+flate2 = "1.1"
+crc32fast = "1.5"
+# MP3 decoding for AVAudioPlayer (the version touchHLE uses)
+symphonia = { version = "0.6.0", default-features = false, features = ["mp3"] }
+# touchHLE's rust-sdl2 fork (the revision touchHLE builds; SDL2 source is bundled)
+sdl2 = { git = "https://github.com/touchHLE/rust-sdl2", tag = "touchHLE-3", features = ["bundled", "static-link"] }
+
+# mmap for the 4 GiB guest memory on Linux / macOS
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"
+gl_generator = "0.14.0"

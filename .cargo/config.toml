@@ -1,0 +1,15 @@
+[env]
+# SDL2 (bundled) is built with CMake. The CMake that ships with Visual Studio 2022
+# does not know newer Visual Studio generators, so name the generator explicitly.
+# Change this if your Visual Studio is different (or remove it to let cmake choose).
+# On Linux / macOS, set CMAKE_GENERATOR="Unix Makefiles" in the shell: a variable
+# set in the environment wins over this one.
+CMAKE_GENERATOR = "Visual Studio 17 2022"
+# CMake 4 refuses SDL2's old cmake_minimum_required; this lets it configure anyway
+# (older CMake ignores it).
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+# GCC 15 compiles C as C23, where bool / true / false are keywords and SDL2's own
+# source no longer builds. C17 for Linux targets only (the cc crate, and through
+# it SDL's CMake, reads CFLAGS_<target>).
+CFLAGS_x86_64_unknown_linux_gnu = "-std=gnu17"
+CFLAGS_aarch64_unknown_linux_gnu = "-std=gnu17"

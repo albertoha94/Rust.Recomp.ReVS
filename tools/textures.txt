@@ -1,0 +1,32 @@
+# Which of the game's 2D images tools/upscale-textures.ps1 upscales, and how. Each line: the texture hash
+# (the name `revs-run --dump-textures` gives it, from the unedited 1.10.10 .ipa), a kind, a note.
+# The hashes only identify the user's own files; no game content is stored here.
+#
+#   ui     buttons, panels, HUD art         Real-ESRGAN x4plus-anime (clean edges)
+#   photo  portraits, pictures, item icons  Real-ESRGAN x4plus (keeps texture)
+#   font   small text sheets                Real-ESRGAN x4plus; the port sharpens the glyph edges when loading
+#   sharp  tiny pictures (40 px faces)      no AI (it invents detail there): the port enlarges them 4x itself
+#                                           (bicubic + a mild sharpen)
+#
+# Images not listed are left as they are: 3D models, effects, scenery, and some 2D ones that looked worse
+# upscaled (stage thumbnails came out smeared; the menu panels' soft scanlines came out as hard white lines).
+10cd8e16b58af475 ui     round menu icons
+1f7cd367695d3dc5 ui     logos and metal background
+320039f9377ed309 ui     scope and dark panels
+367663e40dd6ed64 font   menu font
+4358c4b55cc967ec ui     HUD bars and digits
+6db1dad46511154f ui     mission text
+849d8dce29b58110 font   P1-P4 labels
+b740f865892d6fd1 font   small HUD digits
+bb3d6a2652dffc9d ui     title logo
+bc2e973f3fad5f46 photo  menu background
+c22e2e728f17f5a5 ui     menu buttons
+c245e44fde687234 ui     rank texts
+c8726fd459046599 font   character names
+d5188017d419205b ui     logo sheet
+d92861f52a538fd6 ui     HUD numbers
+e55ddbf3ace5449c photo  item icons
+f52f165001d08abf ui     round HUD parts
+15ef9d7494941d83 sharp  character portraits, framed (lobby rows)
+c3f8df546a3b7101 sharp  character portraits (character select)
+e58389e3b234fda7 photo  character art (character select)

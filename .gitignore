@@ -1,0 +1,16 @@
+# RULE: the port reads the game from the user's own .ipa. No game code or assets
+# go into this repository or any shared build. Everything generated from the
+# .ipa (function maps, recompiled C, extracted files, builds) stays in the
+# ignored folders below.
+/build/
+/out/
+/extracted/
+target/
+*.ipa
+*.app/
+*.bin
+*.mcms
+*.mcts
+*.mcas
+*.mct
+*.h2z

@@ -1,0 +1,3 @@
+[workspace]
+members = ["tools/revs-analyze", "tools/revs-check", "tools/revs-run"]
+resolver = "2"
