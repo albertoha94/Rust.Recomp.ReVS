@@ -200,9 +200,20 @@ RC_NEON2(sub, -)
 RC_NEON2(mul, *)
 #undef RC_NEON2
 
+/* RC_DLL: the game is its own library (rc_runtime.c); these are its exports. */
+#ifdef RC_DLL
+#ifdef _WIN32
+#define RC_API __declspec(dllexport)
+#else
+#define RC_API __attribute__((visibility("default")))
+#endif
+#else
+#define RC_API
+#endif
+
 /* Provided by the generated table / host. */
 void rc_call(Cpu *c, uint32_t target);           /* indirect call through the function table */
-void rc_trap(Cpu *c, uint32_t addr, uint32_t why); /* stop: untranslated code or OS call */
+RC_API void rc_trap(Cpu *c, uint32_t addr, uint32_t why); /* stop: untranslated code or OS call */
 
 /* Provided by the host (checker: stop; native runner: the OS function / a
  * call to a non-game address such as a host thunk). */

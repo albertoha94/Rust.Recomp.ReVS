@@ -23,6 +23,7 @@
 
 mod audio;
 mod fs;
+mod game;
 mod gamekit;
 mod gfx;
 mod gles;
@@ -60,11 +61,8 @@ pub struct Cpu {
     pub ext: [u32; 64],
     pub fpscr: u32,
 }
-type RcFn = unsafe extern "C" fn(*mut Cpu);
-extern "C" {
-    fn rc_lookup(addr: u32) -> Option<RcFn>;
-    fn rc_trap(c: *mut Cpu, addr: u32, why: u32);
-}
+pub type RcFn = unsafe extern "C" fn(*mut Cpu);
+use game::{lookup as rc_lookup, trap as rc_trap};
 const RC_HALT_TRAP: u32 = 2;
 const RC_HALT_IMPORT: u32 = 3;
 
@@ -234,7 +232,7 @@ pub fn guest_call(c: &mut Cpu, f: u32, args: &[u32]) -> u32 {
 
 /// Called by the generated C for `bl <import stub>` (in any image).
 #[no_mangle]
-unsafe extern "C" fn rc_import(c: *mut Cpu, stub: u32, _index: u32) {
+pub(crate) unsafe extern "C" fn rc_import(c: *mut Cpu, stub: u32, _index: u32) {
     let h = host();
     match h.stubs.get(&stub).copied() {
         Some(Target::Guest(t)) => call_guest(c, t),
@@ -246,7 +244,7 @@ unsafe extern "C" fn rc_import(c: *mut Cpu, stub: u32, _index: u32) {
 /// Called by the generated C for an indirect call to an address that isn't a
 /// translated function.
 #[no_mangle]
-unsafe extern "C" fn rc_miss(c: *mut Cpu, target: u32) {
+pub(crate) unsafe extern "C" fn rc_miss(c: *mut Cpu, target: u32) {
     let h = host();
     let t = target & !1;
     if t >= HOST_FN && ((t - HOST_FN) / 4) < h.fn_names.len() as u32 {
@@ -417,7 +415,6 @@ fn main() {
         let _ = DUMP.set((f.parse().expect("--dump=FRAME:FILE"), PathBuf::from(p)));
     }
     args.retain(|a| !a.starts_with("--dump="));
-    trace_setup();
     // --fps=60 (default), 40 or 20: frames drawn per second. The game runs
     // at 20 steps a second; above 20, in-between frames are drawn with the
     // camera, models and animation blended between steps (interp.rs).
@@ -431,6 +428,10 @@ fn main() {
     // (textures.rs); replacements are read from <build>/textures/load.
     let dump_textures = args.iter().any(|a| a == "--dump-textures");
     args.retain(|a| a != "--dump-textures");
+    // --upscale=off: no built-in enlargement of the 2D images (files in
+    // textures/load are still used).
+    let upscale = !args.iter().any(|a| a == "--upscale=off");
+    args.retain(|a| !a.starts_with("--upscale="));
     let build = PathBuf::from(args.get(1).map(String::as_str).unwrap_or("build"));
     // A relative build folder that isn't in the current folder: look next to
     // the project this exe was built in (target/release/ -> ../../).
@@ -443,7 +444,13 @@ fn main() {
     } else {
         build
     };
-    textures::init(&build, dump_textures);
+    textures::init(&build, dump_textures, upscale);
+    if let Err(e) = game::load(&build) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+    // Hooks and REVS_TRACE_FN marks go into the game's coverage table (needs the game loaded).
+    trace_setup();
     // The default home lives inside that build folder.
     let default_home = home == PathBuf::from("build/home");
     let home = match (default_home, player) {
@@ -501,7 +508,7 @@ fn main() {
     h.ui.max_frames = frames;
     h.ui.screenshot = screenshot;
     h.ui.shots = shots;
-    h.objc.ipa = PathBuf::from(images[0]["path"].as_str().unwrap());
+    h.objc.ipa = build.join(images[0]["path"].as_str().unwrap());
     let ipa = h.objc.ipa.clone();
     if let Err(e) = h.fs.mount(&ipa, home.clone()) {
         println!("files: {e}");
@@ -512,7 +519,7 @@ fn main() {
     // 1. Load every image.
     let mut loaded = Vec::new();
     for im in &images {
-        let path = PathBuf::from(im["path"].as_str().unwrap());
+        let path = build.join(im["path"].as_str().unwrap());
         let b = im["base"].as_str().and_then(|b| u32::from_str_radix(b.trim_start_matches("0x"), 16).ok());
         let bin = image::load(&path, b).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         for &(vm, _, fo, fsz) in bin.segments() {
@@ -765,10 +772,7 @@ fn main() {
     println!("end of run: {outcome}");
 }
 
-// ---- --coverage: which game functions ran (RC_ENTER in the generated C).
-extern "C" {
-    static mut rc_cov: [u8; 0x200000];
-}
+// ---- --coverage: which game functions ran (RC_ENTER in the generated C; game::cov).
 static COV_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 pub static COV_FROM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
@@ -777,7 +781,7 @@ pub static COV_FROM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 pub fn coverage_frame(frames: u64) {
     if frames == COV_FROM.load(std::sync::atomic::Ordering::Relaxed) {
         // Keep the REVS_TRACE_FN marks (bit 1).
-        unsafe { (*std::ptr::addr_of_mut!(rc_cov)).iter_mut().for_each(|b| *b &= 2) };
+        unsafe { (*game::cov()).iter_mut().for_each(|b| *b &= 2) };
     }
     if let Some((f, p)) = DUMP.get() {
         if *f == frames {
@@ -797,7 +801,7 @@ fn trace_setup() {
     // Hooks: lyt.rs sees every layout root just before it is drawn.
     for &a in traced.iter().chain([lyt::DRAW, RENDER].iter()).chain(STEP_ONLY.iter()).chain(lyt::SCREEN_HOOKS.iter()).chain(tweaks::HOOKS.iter()) {
         if a < 0x40_0000 {
-            unsafe { (*std::ptr::addr_of_mut!(rc_cov))[(a >> 1) as usize] |= 2 };
+            unsafe { (*game::cov())[(a >> 1) as usize] |= 2 };
         }
     }
     add_hook(MIS_DRAW);
@@ -839,7 +843,7 @@ fn force_event() -> Option<u8> {
 /// Makes rc_trace run at the entry of game function `a` (a hook, not logged).
 pub fn add_hook(a: u32) {
     if a < 0x40_0000 {
-        unsafe { (*std::ptr::addr_of_mut!(rc_cov))[(a >> 1) as usize] |= 2 };
+        unsafe { (*game::cov())[(a >> 1) as usize] |= 2 };
     }
 }
 
@@ -847,7 +851,7 @@ static TRACE_LINES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 
 /// Called by RC_ENTER for a traced function: frame, address, r0-r3, return address.
 #[no_mangle]
-unsafe extern "C" fn rc_trace(c: *mut Cpu, addr: u32) -> i32 {
+pub(crate) unsafe extern "C" fn rc_trace(c: *mut Cpu, addr: u32) -> i32 {
     // In-between frames leave out the game logic that lives in drawing code.
     if STEP_ONLY.contains(&addr) && IN_EXTRA.load(std::sync::atomic::Ordering::Relaxed) {
         return 1;
@@ -1000,7 +1004,7 @@ fn dump_memory(p: &Path) {
 
 fn coverage_write() {
     let Some(p) = COV_PATH.get() else { return };
-    let cov = unsafe { &*std::ptr::addr_of!(rc_cov) };
+    let cov = unsafe { &*game::cov() };
     let list: Vec<String> = cov.iter().enumerate().filter(|e| *e.1 & 1 != 0).map(|(i, _)| format!("{:#x}", i * 2)).collect();
     match std::fs::write(p, list.join("
 ")) {

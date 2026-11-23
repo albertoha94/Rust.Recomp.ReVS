@@ -14,3 +14,4 @@ target/
 *.mcas
 *.mct
 *.h2z
+/dist/

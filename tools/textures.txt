@@ -1,12 +1,14 @@
-# Which of the game's 2D images tools/upscale-textures.ps1 upscales, and how. Each line: the texture hash
-# (the name `revs-run --dump-textures` gives it, from the unedited 1.10.10 .ipa), a kind, a note.
+# Which of the game's 2D images get enlarged, and how: by revs-run itself (built in, compiled from this file) and
+# by tools/upscale-textures.ps1 (Real-ESRGAN, optional; its files win). Each line: the texture hash (the name
+# `revs-run --dump-textures` gives it, from the unedited 1.10.10 .ipa), a kind, a note.
 # The hashes only identify the user's own files; no game content is stored here.
 #
-#   ui     buttons, panels, HUD art         Real-ESRGAN x4plus-anime (clean edges)
-#   photo  portraits, pictures, item icons  Real-ESRGAN x4plus (keeps texture)
-#   font   small text sheets                Real-ESRGAN x4plus; the port sharpens the glyph edges when loading
-#   sharp  tiny pictures (40 px faces)      no AI (it invents detail there): the port enlarges them 4x itself
-#                                           (bicubic + a mild sharpen)
+#   kind   what                             Real-ESRGAN                    built in (textures.rs)
+#   ui     buttons, panels, HUD art         x4plus-anime (clean edges)     edge-aware 4x, firm sharpen
+#   photo  portraits, pictures, item icons  x4plus (keeps texture)         edge-aware 4x, light sharpen
+#   font   small text sheets                x4plus; glyph edges sharpened  edge-aware 4x, firm sharpen, soft edge step
+#   sharp  tiny pictures (40 px faces)      no AI (it invents detail):     bicubic 4x + a mild sharpen
+#                                           the port enlarges them itself
 #
 # Images not listed are left as they are: 3D models, effects, scenery, and some 2D ones that looked worse
 # upscaled (stage thumbnails came out smeared; the menu panels' soft scanlines came out as hard white lines).

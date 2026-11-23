@@ -6,6 +6,30 @@ How the port works, for development. For building and playing, see `README.md`.
   features), rebuilt as port code; see `docs/FEATURES.md`.
 - An unpacked `.ipa` that touchHLE has patched is **not** original. Don't use it as input.
 
+## Releases
+
+A release must never hold game code, so the runner is split in two:
+
+- `revs-run --features dll` (built in CI) has no game code. At start it loads `rc_game.dll` (`librc_game.so` on
+  Linux) from the build folder (`src/game.rs`); the C and the runner meet through a tiny interface:
+  `rc_dll_init` hands the DLL the runner's `rc_import` / `rc_miss` / `rc_trace`, and the runner takes
+  `rc_lookup`, `rc_trap` and the coverage table (`rc_cov_ptr`). `rc_cpu_size` and the ABI number catch a DLL made
+  for another runner. Developer builds (no feature) still link the C in, as before.
+- `revs-prepare` (`tools/revs-prepare`) is the setup step: copies the `.ipa` into `--out` (`game.ipa`), runs the
+  bundled `revs-analyze` (functions for the game and the three libraries, `recompile`), rewrites `images.json` with
+  paths relative to `--out` (the runner resolves relative paths against the build folder), compiles the C with the
+  bundled clang (`-O2 -ffp-contract=off -DRC_NATIVE -DRC_DLL`, 8 at a time) and links `rc_game.dll`. It prints
+  `progress <0..1> <text>` lines for RecompLauncher and logs to `<out>/prepare.log`. Without `--ipa` it reuses the
+  kept `game.ipa`.
+- `tools/release/trim-llvm-mingw.py` cuts llvm-mingw down to clang, lld and the 17 headers / 13 libraries a probe
+  build of the runtime uses (133 MB, 50 MB zipped). `tools/release/package.py` makes
+  `Rust.Recomp.ReVS-v<version>-windows-x64.zip` and refuses a developer `revs-run` or anything made from a game.
+  `tools/release/recomplauncher.json` is the launcher manifest (`@VERSION@` filled in).
+- `.github/workflows/release.yml` does all of it on a `v*` tag and makes a GitHub pre-release.
+
+Checked by hand (2026-11-22): the zip unpacked into a new folder, setup with only Windows' own folders on PATH
+(35 s on 20 threads), menus and a Training match (walk, aim, fire), and setup again without `--ipa`.
+
 ## Status
 
 | Phase | | |
@@ -441,6 +465,29 @@ shared or committed. To make them:
    worse upscaled) are left alone. Images seen for the first time need a line in the list. `sharp` (the 40-pixel
    character portraits) uses no AI, which invents detail on faces that small: the port enlarges the original 4x
    itself (bicubic and a mild sharpen) when it loads `*.sharp.png`.
+
+Built-in upscaling (2026-11-23): release players have no `textures/load` (the images come from the game, so they
+can't ship), so the port enlarges the images in `tools/textures.txt` itself when the game uploads them and there is
+no file for them (`textures.rs`, list compiled in with `include_str!`; hashes only). After the upload it reads the
+texture back as RGBA (`glGetTexImage`) and enlarges it 4x:
+- `ui`, `photo`, `font`: `edge_upscale`, the idea of AMD FSR 1's EASU for still images, written here: each output
+  pixel is a Lanczos-2 blend (FSR's polynomial form) of the 4 x 4 nearest texels, the kernel stretched along the
+  local edge (structure tensor of a luma + alpha signal, bilinear from the 4 nearest texels) and narrowed across it,
+  then held within the 2 x 2 nearest texels (no halos). In premultiplied alpha, so transparent edges get no fringe.
+  Then `sharpen`: a 5 x 5 unsharp mask held within each pixel's 3 x 3 range (0.7 for `ui` and `font`, 0.35 for
+  `photo`). `font` then gets a soft alpha step (0.2..0.55; the AI files' 0.35..0.65 eats holes into the game's thin,
+  partly transparent glyphs).
+- `sharp`: the same bicubic + mild sharpen as `*.sharp.png`.
+Threads split the rows: about 0.18 s for a 512 x 512 image, 2.3 s for all 20, spread over the screens where they
+first appear. Every enlarged or replaced image is uploaded with mipmaps (`GL_GENERATE_MIPMAP`) and kept trilinear,
+since a 4x image is drawn smaller than its own size at usual resolutions. The game reuses GL texture names (3D
+models get names of deleted 2D images), so a name leaves the "enlarged" set on `glDeleteTextures` and on any new
+upload, which also turns its mipmap filtering back off: a 3D texture left with a mipmap filter and no mipmaps is
+incomplete and draws white (first build of this, characters in a match). `--upscale=off` turns the built-in path
+off. To compare it with the AI files on the user's own dumps:
+`REVS_PREVIEW_DUMP=build/textures/dump REVS_PREVIEW_LOAD=build/textures/load REVS_PREVIEW_OUT=<folder> cargo test
+--release -p revs-run --features dll --target-dir target/dll -- --ignored upscale_preview` (crops: original, built-in,
+AI file).
 
 Main menu and title (2026-11-21): B / Esc / Backspace on the main menu (Online Match / Local Match / Single Player,
 no dialog open) closes the game instead of going back to the title screen (`input.rs`). The title screen's bottom

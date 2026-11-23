@@ -1,0 +1,70 @@
+# Builds the Windows release zip when a version tag (v0.1.0, ...) is pushed and
+# attaches it to a GitHub pre-release. The zip holds no game code or assets:
+# revs-run is built with `--features dll` (the game is compiled on each
+# player's PC by revs-prepare from their own .ipa), and package.py refuses
+# anything made from a game.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  LLVM_MINGW: llvm-mingw-20261104-ucrt-x86_64
+  LLVM_MINGW_SHA256: 552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f
+  TOUCHHLE_COMMIT: e7790a835399a4de7335b61b2cb85ad129527637
+
+jobs:
+  windows:
+    # .cargo/config.toml names the Visual Studio 2022 generator for SDL2's CMake build.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        run: rustup default stable
+
+      - name: Build (no game code)
+        shell: pwsh
+        run: |
+          cargo build --release -p revs-analyze -p revs-prepare
+          cargo build --release -p revs-run --features dll --target-dir target/dll
+
+      - name: llvm-mingw (trimmed to what the setup step needs)
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\llvm-mingw.zip"
+          Invoke-WebRequest -UseBasicParsing -OutFile $zip "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/$env:LLVM_MINGW.zip"
+          if ((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower() -ne $env:LLVM_MINGW_SHA256) { throw "llvm-mingw: unexpected SHA-256" }
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\llvm"
+          python tools/release/trim-llvm-mingw.py "$env:RUNNER_TEMP\llvm\$env:LLVM_MINGW" "$env:RUNNER_TEMP\clang"
+
+      - name: touchHLE's open-source ARM libraries
+        shell: pwsh
+        run: |
+          $d = "$env:RUNNER_TEMP\dylibs"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          foreach ($f in "libgcc_s.1.dylib", "libstdc++.6.0.9.dylib", "libsqlite3.dylib", "COPYING.libgcc", "COPYING.libstdcxx", "COPYING.libsqlite3") {
+            Invoke-WebRequest -UseBasicParsing -OutFile "$d\$f" "https://raw.githubusercontent.com/touchHLE/touchHLE/$env:TOUCHHLE_COMMIT/touchHLE_dylibs/$f"
+          }
+          # package.py checks their SHA-256.
+
+      - name: Package
+        shell: pwsh
+        run: python tools/release/package.py --version=$env:GITHUB_REF_NAME --clang="$env:RUNNER_TEMP\clang" --dylibs="$env:RUNNER_TEMP\dylibs" --out=dist
+
+      - name: Pre-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = Get-ChildItem dist -Filter *.zip | Select-Object -First 1
+          $notes = @"
+          Windows build for RecompLauncher, or to set up by hand. **No game files are included:** the setup step recompiles the game on your PC from your own ``Resident_Evil_Mercenaries_VS._1.10.10_ios_4.2.ipa`` (about a minute).
+
+          By hand: unzip, run ``revs-prepare.exe --ipa=<your .ipa>``, then ``revs-run.exe game``. See the README for features, test status and controls.
+          "@
+          gh release create $env:GITHUB_REF_NAME $zip.FullName --prerelease --title "$env:GITHUB_REF_NAME (beta)" --notes $notes

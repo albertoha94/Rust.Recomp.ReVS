@@ -705,6 +705,7 @@ pub fn call(h: &mut Host, c: &mut Cpu, name: &str) -> bool {
                 0
             }
             "glDeleteTextures" => {
+                crate::textures::on_delete(std::slice::from_raw_parts(p(1) as *const u32, int(0).max(0) as usize));
                 g.DeleteTextures(int(0), p(1) as *const u32);
                 0
             }

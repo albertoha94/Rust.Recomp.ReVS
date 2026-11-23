@@ -17,6 +17,14 @@ symphonia = { version = "0.6.0", default-features = false, features = ["mp3"] }
 # touchHLE's rust-sdl2 fork (the revision touchHLE builds; SDL2 source is bundled)
 sdl2 = { git = "https://github.com/touchHLE/rust-sdl2", tag = "touchHLE-3", features = ["bundled", "static-link"] }
 
+# Opens the game's code from the build folder (feature "dll").
+libloading = { version = "0.8", optional = true }
+
+[features]
+# Release build: no game code inside; it is loaded from rc_game.dll, which the
+# setup step (revs-prepare) compiles on the player's PC from their own .ipa.
+dll = ["dep:libloading"]
+
 # mmap for the 4 GiB guest memory on Linux / macOS
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

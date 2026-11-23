@@ -1,0 +1,38 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Resident Evil: The Mercenaries VS. (Rust.Recomp.ReVS)",
+  "repo": "albertoha94/Rust.Recomp.ReVS",
+  "inputs": [
+    {
+      "id": "ipa",
+      "label": "Your copy of the iOS game: Resident_Evil_Mercenaries_VS._1.10.10_ios_4.2.ipa (version 1.10.10, unedited)",
+      "role": "game",
+      "formats": [{ "type": "file", "extensions": ["ipa"] }]
+    }
+  ],
+  "prepare": {
+    "program": ["revs-prepare.exe"],
+    "args": ["--ipa={input:ipa}", "--out={install}/game"],
+    "label": "Recompiling the game from your copy (a few minutes)",
+    "done": ["{install}/game/rc_game.dll", "{install}/game/game.ipa"],
+    "keeps_copy": true
+  },
+  "start": {
+    "program": ["revs-run.exe"],
+    "args": ["{install}/game", "--home={data}/home"]
+  },
+  "folders": {
+    "game": [{ "path": "{install}/game" }],
+    "saves": [{ "path": "{data}/home/Documents" }],
+    "logs": [{ "path": "{install}/game" }]
+  },
+  "saves": ["{data}/home/Documents"],
+  "exit_codes": {
+    "0": "ok",
+    "1": "The game's files are missing or were made for another version: run its setup again."
+  },
+  "system": {
+    "windows": { "version": "10", "graphics": { "opengl": "2.1" } }
+  }
+}

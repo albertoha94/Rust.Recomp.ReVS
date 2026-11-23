@@ -3,41 +3,25 @@
 //! revs-check, in native mode (RC_NATIVE: no loop budget).
 //!
 //! Env override: REVS_RECOMP_DIR (default <repo>/build/recomp).
+//!
+//! With feature `dll` (release builds) the game's C is left out: it is loaded
+//! at start from rc_game.dll (see src/game.rs), so the exe holds no game code.
 
 use std::path::PathBuf;
 
 fn main() {
     let pkg = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime = pkg.join("../revs-check/runtime");
+    let dll = std::env::var_os("CARGO_FEATURE_DLL").is_some();
     let recomp = std::env::var("REVS_RECOMP_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| pkg.join("../../build/recomp"));
     println!("cargo:rerun-if-env-changed=REVS_RECOMP_DIR");
     println!("cargo:rerun-if-changed={}", runtime.display());
     println!("cargo:rerun-if-changed={}", recomp.display());
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&recomp)
-        .unwrap_or_else(|_| panic!("{} missing: run `revs-analyze recompile <ipa> build all` first", recomp.display()))
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "c"))
-        .collect();
-    files.sort();
-    for f in &files {
-        println!("cargo:rerun-if-changed={}", f.display());
+    if !dll {
+        game_c(&runtime, &recomp);
     }
-    cc::Build::new()
-        .file(runtime.join("rc_runtime.c"))
-        .files(&files)
-        .include(&runtime)
-        .define("RC_NATIVE", None)
-        .opt_level(2)
-        .warnings(false)
-        // gcc / clang (Linux, macOS): never fuse a*b+c into one FMA. The game's
-        // VFP multiplies and adds round separately; fusing would change results
-        // on ARM hosts (Apple Silicon) and let a Local Match drift between a Mac
-        // and a PC. (MSVC for x64 never fuses without /arch:AVX2.)
-        .flag_if_supported("-ffp-contract=off")
-        .compile("rc_game_native");
 
     // PVRTC decoder (vendor/PVRTDecompress, MIT).
     println!("cargo:rerun-if-changed=native/pvrtc.cpp");
@@ -51,6 +35,33 @@ fn main() {
         // A symbol map next to the exe, to name the code a --watchdog sample was in.
         println!("cargo:rustc-link-arg-bins=/MAP");
     }
+}
+
+/// Compiles the generated C (developer builds) into the exe.
+fn game_c(runtime: &std::path::Path, recomp: &std::path::Path) {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(recomp)
+        .unwrap_or_else(|_| panic!("{} missing: run `revs-analyze recompile <ipa> build all` first", recomp.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "c"))
+        .collect();
+    files.sort();
+    for f in &files {
+        println!("cargo:rerun-if-changed={}", f.display());
+    }
+    cc::Build::new()
+        .file(runtime.join("rc_runtime.c"))
+        .files(&files)
+        .include(runtime)
+        .define("RC_NATIVE", None)
+        .opt_level(2)
+        .warnings(false)
+        // gcc / clang (Linux, macOS): never fuse a*b+c into one FMA. The game's
+        // VFP multiplies and adds round separately; fusing would change results
+        // on ARM hosts (Apple Silicon) and let a Local Match drift between a Mac
+        // and a PC. (MSVC for x64 never fuses without /arch:AVX2.)
+        .flag_if_supported("-ffp-contract=off")
+        .compile("rc_game_native");
 }
 
 /// GL bindings for the GLES layer (the same set touchHLE generates).
