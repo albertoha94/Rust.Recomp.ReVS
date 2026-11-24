@@ -211,6 +211,9 @@ pub struct Btn {
     pub enabled: bool,
     /// x, y, w, h in landscape game points.
     pub rect: [f32; 4],
+    /// Its visible pictures' areas on the texture sheet (x, y, w, h); a
+    /// lobby portrait tells the character by it.
+    pub pics: Vec<[u32; 4]>,
 }
 
 impl Btn {
@@ -232,6 +235,9 @@ struct Lists {
     /// Names of the visible root layouts drawn, this frame and the last one.
     current_roots: Vec<String>,
     last_roots: Vec<String>,
+    /// Visible pictures named Img*, with their sheet area (this frame, last).
+    current_imgs: Vec<(String, [u32; 4])>,
+    last_imgs: Vec<(String, [u32; 4])>,
     /// Class of each vtable seen (None: not a button).
     kinds: HashMap<u32, Option<Kind>>,
 }
@@ -273,13 +279,14 @@ fn dump(h: &Host, o: u32, depth: u32) {
         return;
     }
     println!(
-        "  {:indent$}{:?} vis={} en={} rect={:?} hit={:?}",
+        "  {:indent$}{:?} vis={} en={} rect={:?} hit={:?} src={:?}",
         "",
         name_of(h, o),
         h.rd8(o + 0x51),
         h.rd8(o + 0x50),
         rect_of(h, o),
         [0, 4, 8, 12].map(|k| h.rd32(o + 0xb0 + k) as i32),
+        [0x98, 0x9c, 0xa0, 0xa4].map(|k| h.rd32(o + k)),
         indent = 2 * depth as usize
     );
     let (n, kids) = (h.rd32(o + 0x18), h.rd32(o + 0xc));
@@ -310,9 +317,25 @@ fn walk(h: &Host, l: &mut Lists, o: u32, root: &str, depth: u32) {
             }
         }
         let enabled = h.rd8(o + 0x50) != 0;
-        l.current.push(Btn { name, root: root.to_string(), kind, enabled, rect: rect_of(h, o) });
+        let mut pics = Vec::new();
+        if kids != 0 && n < 64 {
+            for i in 0..n {
+                let k = h.rd32(kids + 4 * i);
+                if k == 0 {
+                    continue;
+                }
+                let src = [0x98, 0x9c, 0xa0, 0xa4].map(|o| h.rd32(k + o));
+                if h.rd8(k + 0x51) != 0 && src[2] > 0 && src[2] < 4096 {
+                    pics.push(src);
+                }
+            }
+        }
+        l.current.push(Btn { name, root: root.to_string(), kind, enabled, rect: rect_of(h, o), pics });
         // A button's children are its own pictures and texts.
         return;
+    }
+    if name.starts_with("Img") {
+        l.current_imgs.push((name, [0x98, 0x9c, 0xa0, 0xa4].map(|k| h.rd32(o + k))));
     }
     if kids != 0 && n < 256 {
         for i in 0..n {
@@ -330,6 +353,7 @@ pub fn on_draw(h: &Host, this: u32) {
     if frame != l.frame {
         l.last = std::mem::take(&mut l.current);
         l.last_roots = std::mem::take(&mut l.current_roots);
+        l.last_imgs = std::mem::take(&mut l.current_imgs);
         l.frame = frame;
         // REVS_LYT=1: print the buttons on screen every 30 frames.
         if frame % 30 == 0 && std::env::var_os("REVS_LYT").is_some() {
@@ -358,6 +382,12 @@ pub fn on_draw(h: &Host, this: u32) {
 pub fn roots() -> Vec<String> {
     let guard = LISTS.lock().unwrap();
     guard.as_ref().map_or(Vec::new(), |l| l.last_roots.clone())
+}
+
+/// The sheet area of the visible picture `name` in the last complete frame.
+pub fn image(name: &str) -> Option<[u32; 4]> {
+    let guard = LISTS.lock().unwrap();
+    guard.as_ref()?.last_imgs.iter().find(|e| e.0 == name).map(|e| e.1)
 }
 
 /// The buttons on screen in the last complete frame.

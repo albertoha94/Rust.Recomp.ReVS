@@ -24,6 +24,7 @@
 //! Overlay: while a controller is connected, badges show which pad button
 //! touches where; holding View (Back) for 0.8 s hides or shows them.
 
+use crate::colorui;
 use crate::gfx::Badge;
 use crate::lyt::{self, Btn, Kind};
 use crate::touch;
@@ -329,7 +330,7 @@ fn badge_left(b: &Btn, label: &'static str) -> Badge {
 fn lift_all(h: &mut Host, c: &mut Cpu) {
     for id in STICK..touch::FINGERS {
         if touch::is_down(h, id) {
-            let pt = h.touch.fingers[id].loc;
+            let pt = h.touch.fingers.get(id).map_or((0.0, 0.0), |f| f.loc);
             touch::finger(h, c, id, 3, pt);
         }
     }
@@ -342,7 +343,7 @@ fn hold(h: &mut Host, c: &mut Cpu, id: usize, down: bool, at: (f32, f32)) {
         (true, true) => touch::finger_at(h, c, id, 1, at.0, at.1),
         // A finger lifts where it is.
         (false, true) => {
-            let pt = h.touch.fingers[id].loc;
+            let pt = h.touch.fingers.get(id).map_or((0.0, 0.0), |f| f.loc);
             touch::finger(h, c, id, 3, pt);
         }
         (false, false) => {}
@@ -421,7 +422,7 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
     let dt = if s.last == 0.0 { 0.0 } else { (now - s.last).clamp(0.0, 0.1) as f32 };
     s.last = now;
 
-    let btns = lyt::buttons();
+    let mut btns = lyt::buttons();
     let screen = if !in_match(h) {
         Screen::Menu
     } else if btns.iter().any(|b| b.root == INVENTORY_ROOT) {
@@ -429,6 +430,9 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
     } else {
         Screen::Gameplay
     };
+    // The port's colour menus (lobby chips, the character select bar).
+    let port_ui = colorui::frame(&btns, screen == Screen::Menu);
+    btns.extend(colorui::buttons());
     if s.screen != Some(screen) {
         if s.screen.is_some() {
             lift_all(h, c);
@@ -480,6 +484,9 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
             if !s.focus_shown || cur.is_none() {
                 // The first press shows the focus nearest the pointer.
                 cur = nearest(&list, s.pointer);
+            } else if cur.is_some_and(|b| b.name == colorui::BAR_NAME) && nav.0 != 0 && nav.1 == 0 {
+                // On the colour bar left / right change the colour.
+                colorui::step(nav.0);
             } else if let Some(from) = cur {
                 let l = ((nav.0 * nav.0 + nav.1 * nav.1) as f32).sqrt();
                 cur = step(&list, from, nav.0 as f32 / l, nav.1 as f32 / l).or(cur);
@@ -596,5 +603,6 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         g.pointer = shown;
         g.focus = focus_rect;
         g.badges = if show_badges { badges } else { Vec::new() };
+        g.ui = port_ui;
     }
 }

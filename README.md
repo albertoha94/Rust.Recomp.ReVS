@@ -35,6 +35,7 @@ has checked it yet: please report what you find.
 | Cleaner buttons, fonts and HUD: the port enlarges the game's 2D images itself (4x, edge-aware), no files needed | Tested (Windows: menus and a match, by script and by hand) |
 | Even cleaner: optional AI-upscaled 2D images you make on your own PC (see below) | Tested (Windows) |
 | Sharper character portraits in the lobby and character select | Tested (Windows) |
+| Outfit colours: 10 colours per character (Blue, Red, Yellow, Brown, Orange, Green, Gray, Purple, Teal, Black), picked on character select, COM players too (see below) | Tested (Windows: Training, by script) |
 
 ### Controls
 
@@ -152,6 +153,7 @@ The same goes for anything made from your `.ipa`: textures, dumps, saves, screen
 | `--import-save=<folder>` | copy a touchHLE save (`jp.co.capcom.biovsus` or its `Documents`) into the port, then start |
 | `--home=DIR` | save folder (default `build/home`) |
 | `--upscale=off` | draw the game's 2D images as they are (no built-in enlargement) |
+| `--colors=P1:Red,P3:Teal` | these players always wear these colours (for tests) |
 | `--dump-textures` | save the game's 2D images for upscaling (see below) |
 
 ### Cleaner buttons and text
@@ -170,6 +172,23 @@ instead of the built-in enlargement:
    (With a release, the folder is `game\textures\load` next to `revs-run.exe`, and the dump goes to `game\textures\dump`.)
 
 These images are made from your own game: keep them to yourself.
+
+### Outfit colours
+
+Each character has 10 outfit colours: Blue, Red, Yellow, Brown, Orange, Green, Gray, Purple, Teal and Black. Each
+one starts in its original outfit: Chris Green, Jill Blue, Wesker Black.
+
+- **Character select:** the bar under the character's picture shows the colour (◀ ● GREEN ▶). Click or tap its
+  arrows, or move the D-pad focus onto it, then use left / right (A: the next colour). The character's picture
+  shows the colour too.
+- **Lobby:** a colour dot left of each player's portrait.
+- **COM players:** tap a COM's portrait to open character select for it, then pick its colour the same way. By
+  default a COM wears its character's starting colour, or the next free one if an earlier player already wears that
+  colour on the same character.
+- **Saved:** your colour for each character is kept in `port_colors.txt` in the save folder.
+
+The port paints the colours itself when the game loads the outfit, from recipes in `tools/colors.json` (numbers
+only, no game images). Colours are local for now: in a Local Match each window shows its own choices.
 
 ## Controls
 

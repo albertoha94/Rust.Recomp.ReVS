@@ -122,6 +122,7 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
     let tex = tex as u32;
     // New contents for a texture that held an enlarged image (any format, 3D
     // ones too): it is the game's again, with filtering that needs no mipmaps.
+    forget_art(tex);
     if st.replaced.remove(&tex) {
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::GENERATE_MIPMAP, gl21::FALSE as _);
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::TEXTURE_MIN_FILTER, gl21::LINEAR as _);
@@ -134,6 +135,9 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
         return;
     }
     let key = hash(fmt, w, h, std::slice::from_raw_parts(data, size));
+    if tex_log() {
+        println!("texlog hash tex={tex} {key:016x}");
+    }
     if let Some(dir) = &st.dump {
         if st.dumped.insert(key) {
             let mut px = vec![0u8; (w * h * 4) as usize];
@@ -146,6 +150,8 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
             let _ = std::fs::write(dir.join(format!("{key:016x}_{w}x{h}{tag}.png")), png_write(w, h, &px));
         }
     }
+    // A character's outfit: the colour its player wears (recolor.rs).
+    let variant = crate::recolor::take(key);
     let mut tex_w = w;
     if let Some(path) = st.load.get(&key) {
         match std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| png_read(&b)) {
@@ -161,6 +167,9 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
                 } else {
                     (w2, h2)
                 };
+                if let Some(v) = variant {
+                    crate::recolor::apply(v, w2, h2, &mut px);
+                }
                 upload_big(g, w2, h2, &px);
                 st.replaced.insert(tex);
                 tex_w = w2;
@@ -176,9 +185,86 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
         upload_big(g, w2, h2, &big);
         st.replaced.insert(tex);
         tex_w = w2;
+    } else if let Some(v) = variant {
+        // No bigger file: the game's own outfit, recoloured.
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        gl21::PixelStorei(gl21::PACK_ALIGNMENT, 1);
+        gl21::GetTexImage(gl21::TEXTURE_2D, 0, gl21::RGBA, gl21::UNSIGNED_BYTE, px.as_mut_ptr() as *mut _);
+        crate::recolor::apply(v, w, h, &mut px);
+        upload_big(g, w, h, &px);
+        st.replaced.insert(tex);
     }
     if key == TITLE_SHEET {
         add_title_credit(g, tex_w / w, w, h);
+    }
+    if Some(key) == crate::recolor::art_hash() {
+        keep_art(tex);
+    }
+}
+
+/// The character select sheet as uploaded (after any enlarging): the port
+/// paints the character on show in its colour (colorui.rs, recolor.rs).
+struct Art {
+    tex: u32,
+    w: u32,
+    h: u32,
+    original: Vec<u8>,
+    /// What it shows now: (character, colour), or None for the original.
+    shown: Option<(usize, usize)>,
+}
+
+static ART: Mutex<Option<Art>> = Mutex::new(None);
+
+/// Keeps the bound texture's pixels as the sheet's original.
+unsafe fn keep_art(tex: u32) {
+    let (mut w, mut h) = (0, 0);
+    gl21::GetTexLevelParameteriv(gl21::TEXTURE_2D, 0, gl21::TEXTURE_WIDTH, &mut w);
+    gl21::GetTexLevelParameteriv(gl21::TEXTURE_2D, 0, gl21::TEXTURE_HEIGHT, &mut h);
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    gl21::PixelStorei(gl21::PACK_ALIGNMENT, 1);
+    gl21::GetTexImage(gl21::TEXTURE_2D, 0, gl21::RGBA, gl21::UNSIGNED_BYTE, px.as_mut_ptr() as *mut _);
+    *ART.lock().unwrap() = Some(Art { tex, w: w as u32, h: h as u32, original: px, shown: None });
+}
+
+/// GL name `tex` gets other contents (or is deleted): it isn't the sheet now.
+fn forget_art(tex: u32) {
+    let mut a = ART.lock().unwrap();
+    if a.as_ref().is_some_and(|a| a.tex == tex) {
+        *a = None;
+    }
+}
+
+/// Shows character `ch` in colour `colour` on the character select sheet
+/// (None: the sheet as the game made it). Does nothing if it already does.
+///
+/// # Safety
+/// The GL context is current.
+pub unsafe fn show_art(want: Option<(usize, usize)>) {
+    let mut guard = ART.lock().unwrap();
+    let Some(a) = guard.as_mut() else { return };
+    if a.shown == want {
+        return;
+    }
+    let t = std::time::Instant::now();
+    let mut px = a.original.clone();
+    if let Some((ch, colour)) = want {
+        crate::recolor::apply_art(ch, colour, a.w, a.h, &mut px);
+    }
+    a.shown = want;
+    // Into the sheet's texture, leaving the game's GL state as it was.
+    let (mut bound, mut align) = (0, 0);
+    gl21::GetIntegerv(gl21::TEXTURE_BINDING_2D, &mut bound);
+    gl21::GetIntegerv(gl21::UNPACK_ALIGNMENT, &mut align);
+    gl21::BindTexture(gl21::TEXTURE_2D, a.tex);
+    gl21::PixelStorei(gl21::UNPACK_ALIGNMENT, 1);
+    gl21::TexSubImage2D(gl21::TEXTURE_2D, 0, 0, 0, a.w as _, a.h as _, gl21::RGBA, gl21::UNSIGNED_BYTE, px.as_ptr() as *const _);
+    gl21::PixelStorei(gl21::UNPACK_ALIGNMENT, align);
+    gl21::BindTexture(gl21::TEXTURE_2D, bound as u32);
+    if let Some((ch, colour)) = want {
+        println!("colors: character select picture {ch} in {} ({} ms)", crate::recolor::names()[colour], t.elapsed().as_millis());
     }
 }
 
@@ -260,6 +346,9 @@ unsafe fn add_title_credit(g: &mut dyn GLES, k: u32, w: u32, h: u32) {
 /// them, for 3D models too); they must not keep the enlarged images' filtering,
 /// which needs mipmaps those textures don't have (they would draw white).
 pub fn on_delete(names: &[u32]) {
+    for &n in names {
+        forget_art(n);
+    }
     if let Some(st) = STATE.lock().unwrap().as_mut() {
         for n in names {
             st.replaced.remove(n);
@@ -688,7 +777,7 @@ pub(crate) fn png_write(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 }
 
 /// PNG (8-bit RGB or RGBA, not interlaced) -> (w, h, RGBA8).
-fn png_read(b: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+pub(crate) fn png_read(b: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     use std::io::Read;
     if b.get(..8) != Some(b"\x89PNG\r\n\x1a\n") {
         return Err("not a PNG".into());

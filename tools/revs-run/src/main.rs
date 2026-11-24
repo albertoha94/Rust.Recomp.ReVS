@@ -22,6 +22,7 @@
 //!                      through a pointer lands in rc_miss, which dispatches)
 
 mod audio;
+mod colorui;
 mod fs;
 mod game;
 mod gamekit;
@@ -34,6 +35,7 @@ mod interp;
 mod input;
 mod lyt;
 mod mcts;
+mod recolor;
 mod textures;
 mod tweaks;
 mod net;
@@ -437,6 +439,12 @@ fn main() {
     // textures/load are still used).
     let upscale = !args.iter().any(|a| a == "--upscale=off");
     args.retain(|a| !a.starts_with("--upscale="));
+    // --colors=P1:Red,P3:Teal: the outfit colour of these players (recolor.rs;
+    // a test until the menus can choose). Others wear their own colours.
+    if let Some(v) = args.iter().find_map(|a| a.strip_prefix("--colors=")) {
+        recolor::parse_arg(v);
+    }
+    args.retain(|a| !a.starts_with("--colors="));
     let build = PathBuf::from(args.get(1).map(String::as_str).unwrap_or("build"));
     // A relative build folder that isn't in the current folder: look next to
     // the project this exe was built in (target/release/ -> ../../).
@@ -478,6 +486,8 @@ fn main() {
             std::process::exit(1);
         }
     }
+    // Each player's colour per character (port_colors.txt next to the save).
+    recolor::init(&home);
     let list = build.join("recomp/images.json");
     let images: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(&list).unwrap_or_else(|e| panic!("{}: {e} (run `revs-analyze recompile` first)", list.display())))
@@ -816,6 +826,9 @@ fn trace_setup() {
         }
     }
     add_hook(MIS_DRAW);
+    for a in recolor::HOOKS {
+        add_hook(a);
+    }
     let _ = TRACED.set(traced);
 }
 
@@ -886,6 +899,9 @@ pub(crate) unsafe extern "C" fn rc_trace(c: *mut Cpu, addr: u32) -> i32 {
     }
     if tweaks::HOOKS.contains(&addr) && tweaks::on_enter(host(), addr, (*c).r[0], (*c).r[1]) {
         return 1;
+    }
+    if recolor::HOOKS.contains(&addr) {
+        recolor::on_enter(host(), addr, (*c).r[0], (*c).r[1], (*c).r[14]);
     }
     if addr == RENDER {
         tweaks::each_frame(host());

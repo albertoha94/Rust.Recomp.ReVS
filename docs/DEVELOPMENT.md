@@ -502,3 +502,40 @@ line reads "(c) CAPCOM 2011 . Recomp by albertoha94": the port copies the game's
 band of the title sheet, adds the credit text after it (`tools/revs-run/assets/title_credit.png`, made by
 `tools/make-title-credit.ps1`), and points that layout part at the longer line, centred (`textures.rs`, `lyt.rs`).
 Capcom's notice stays.
+
+Outfit colours (2026-11-24): 10 colours per character, painted by the port when the game uploads a character's
+outfit texture (PVRTC, 512 x 512; or its 4x file from `textures/load`). Recipes are numbers only, in
+`tools/colors.json` (compiled in with `include_str!`): the colour order, a swatch per colour for the menus, and per
+character the outfit hash, the starting colour (shown as the original texture) and its parts.
+- Recolouring (`recolor.rs`): each part is a mask (sheet rectangles, polygons and ellipses, minus excluded shapes,
+  kept to pixels within its HSV limits, then a speck pass, fill passes and a soft 3 x 3 edge), a gray base (level
+  or gamma, optionally blurred) and an HLS colourize per colour (hue, saturation, lightness, scaled by the
+  character's `sat_scale`). `"original"` keeps the texture, `"gray"` is the gray base. The masks are worked out once
+  per character and size (cached; about 150-200 ms the first time, about 12 ms after). It is a port of the Python
+  tool the recipes were tuned with (f64 throughout, so both give the same pixels within 1 level).
+  `REVS_RECOLOR=in.png,CHARACTER,COLOUR,out.png cargo test --release -p revs-run -- --ignored recolor_file`
+  recolours one image.
+- Which player an upload belongs to: the match creates your character (`GM_CtrlMain_Data::Create_ChPL` 0x11f054),
+  then the others (`Create_ChRPC`, each calling `BioVS_Protocol::GetRPCPlayerNo` 0x75acc, return address 0x11f27c,
+  whose result is the player number), and uploads the outfits afterwards in the same order. Hooks on both queue the
+  player numbers; each outfit upload takes the next one. Your own number is read from the protocol object
+  (`+0x11e8`) there and on `GetEntryNameUncode` 0x77494, which the lobby calls every frame.
+- Choices: yours per character, saved in `<home>/port_colors.txt` ("Chris Red" per line); a colour picked on
+  character select for any player while they keep that character; else (COM) the starting colour, or the next
+  free one in the order when an earlier player wears it on the same character. `--colors=P1:Red,P3:Teal` forces
+  colours for tests.
+- Menus (`colorui.rs`): the lobby is told by its portrait buttons `BtnChara1P`..`4P`, each character by its
+  portrait's area on the sheet (42 x 28, x / 42 = character; the button's other pictures are skipped); character
+  select by `ImgChara` (x / 158 = character) with `BtnPrev` / `BtnNext`. The port draws the lobby dots and the
+  colour bar itself (`gfx.rs` `Ui`: rectangles, frames, discs, triangles and a small 5 x 7 capital font), after the
+  game's picture. A press on the bar is claimed in `touch.rs` (`finger_at` and `mouse`, where every input ends): the
+  game never sees it, nor that finger's moves and release, and a claimed finger counts as down so a held A presses
+  once. Pressing a lobby portrait (not claimed) makes character select edit that player. The bar joins the D-pad
+  focus list as `PortColor`; left / right on it change the colour.
+- The character select picture: all three characters are on one sheet (`e58389e3b234fda7`). Each character's
+  `art` recipe in `colors.json` covers its area, with the same colours; `amin` keeps the transparent background out
+  (the dump fills the colour under it from its neighbours, which would look like dark cloth). When the sheet is
+  uploaded (after any enlarging) the port keeps its pixels (`textures.rs` `keep_art`); on character select
+  `show_art` paints the character on show in its player's colour and puts it back with `glTexSubImage2D` (about
+  5-130 ms per change, the game's GL state left as it was), and the original again off that screen.
+- Not yet: the colours aren't sent between players (each window shows its own choices).

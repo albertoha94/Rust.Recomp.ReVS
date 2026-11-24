@@ -139,8 +139,9 @@ fn new_set(h: &mut Host, items: Vec<u32>) -> u32 {
 }
 
 /// True if finger `id` is down.
+/// A finger the port took counts as down (so a held button presses once).
 pub fn is_down(h: &Host, id: usize) -> bool {
-    h.touch.fingers.get(id).is_some_and(|f| f.down)
+    h.touch.fingers.get(id).is_some_and(|f| f.down) || CLAIMED.get(id).is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// One finger event at a portrait screen point: phase 0 down, 1 move, 3 up.
@@ -148,6 +149,13 @@ pub fn is_down(h: &Host, id: usize) -> bool {
 /// a move to the same point are ignored.
 pub fn finger(h: &mut Host, c: &mut Cpu, id: usize, phase: u32, pt: (f32, f32)) {
     if id >= FINGERS {
+        return;
+    }
+    // The port's finger: the game never saw it go down.
+    if CLAIMED[id].load(std::sync::atomic::Ordering::Relaxed) {
+        if phase == 3 {
+            CLAIMED[id].store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         return;
     }
     if h.touch.fingers.len() < FINGERS {
@@ -216,8 +224,30 @@ pub fn finger(h: &mut Host, c: &mut Cpu, id: usize, phase: u32, pt: (f32, f32)) 
     }
 }
 
+/// Fingers whose press went to the port's own menus (colorui.rs): their moves
+/// and release don't reach the game either.
+static CLAIMED: [std::sync::atomic::AtomicBool; FINGERS] = [const { std::sync::atomic::AtomicBool::new(false) }; FINGERS];
+
+/// True if this event is the port's, not the game's: a press the port takes
+/// (colorui.rs), and the finger's moves and release after it.
+fn claimed(h: &Host, id: usize, phase: u32, at: (f32, f32)) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some(flag) = CLAIMED.get(id) else { return false };
+    if phase == 0 && !is_down(h, id) && crate::colorui::press(at) {
+        flag.store(true, Relaxed);
+    }
+    let mine = flag.load(Relaxed);
+    if phase == 3 {
+        flag.store(false, Relaxed);
+    }
+    mine
+}
+
 /// A finger event at a landscape game point (480 x 320, as the player sees it).
 pub fn finger_at(h: &mut Host, c: &mut Cpu, id: usize, phase: u32, x: f32, y: f32) {
+    if claimed(h, id, phase, (x, y)) {
+        return;
+    }
     let Some((wx, wy)) = landscape_to_window(h, x, y) else { return };
     let Some(pt) = to_screen(h, wx, wy) else { return };
     finger(h, c, id, phase, pt);
@@ -225,6 +255,10 @@ pub fn finger_at(h: &mut Host, c: &mut Cpu, id: usize, phase: u32, x: f32, y: f3
 
 /// One mouse event (left button = finger 0) in window coordinates.
 pub fn mouse(h: &mut Host, c: &mut Cpu, phase: u32, wx: f32, wy: f32) {
+    let at = window_to_landscape(h, wx, wy).unwrap_or((-1.0, -1.0));
+    if claimed(h, MOUSE, phase, at) {
+        return;
+    }
     let Some(pt) = to_screen(h, wx, wy) else { return };
     finger(h, c, MOUSE, phase, pt);
 }

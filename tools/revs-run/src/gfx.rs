@@ -56,6 +56,8 @@ pub struct Gfx {
     pub focus: Option<[f32; 4]>,
     /// Controller overlay badges, from input.rs.
     pub badges: Vec<Badge>,
+    /// The port's own menu parts (colour bar, lobby chips), from colorui.rs.
+    pub ui: Vec<Ui>,
     /// Set by uikit.rs when the next presented frame is saved as a screenshot:
     /// `present` then reads the finished picture before the buffer swap.
     pub capture_next: bool,
@@ -70,6 +72,119 @@ pub struct Badge {
     pub at: (f32, f32),
     pub label: &'static str,
     pub colour: [f32; 3],
+}
+
+/// One of the port's own menu parts, in landscape game points.
+#[derive(Clone)]
+pub enum Ui {
+    /// Filled rectangle (x, y, w, h), RGBA.
+    Rect([f32; 4], [f32; 4]),
+    /// Rectangle outline, RGB, line width in points.
+    Frame([f32; 4], [f32; 3], f32),
+    /// Disc: centre, radius, RGB, with a rim of this colour.
+    Disc((f32, f32), f32, [f32; 3], [f32; 3]),
+    /// Filled triangle, RGB.
+    Tri([(f32, f32); 3], [f32; 3]),
+    /// Text in capitals (5 x 7 font): left end and vertical centre, dot size, RGB.
+    Text((f32, f32), String, f32, [f32; 3]),
+}
+
+/// 5 x 7 capitals for the port's menu text (rows top down, bit 4 = left).
+fn glyph5(ch: char) -> [u8; 7] {
+    match ch {
+        'A' => [14, 17, 17, 31, 17, 17, 17],
+        'B' => [30, 17, 17, 30, 17, 17, 30],
+        'C' => [14, 17, 16, 16, 16, 17, 14],
+        'D' => [30, 17, 17, 17, 17, 17, 30],
+        'E' => [31, 16, 16, 30, 16, 16, 31],
+        'G' => [14, 17, 16, 23, 17, 17, 15],
+        'K' => [17, 18, 20, 24, 20, 18, 17],
+        'L' => [16, 16, 16, 16, 16, 16, 31],
+        'N' => [17, 25, 21, 19, 17, 17, 17],
+        'O' => [14, 17, 17, 17, 17, 17, 14],
+        'P' => [30, 17, 17, 30, 16, 16, 16],
+        'R' => [30, 17, 17, 30, 20, 18, 17],
+        'T' => [31, 4, 4, 4, 4, 4, 4],
+        'U' => [17, 17, 17, 17, 17, 17, 14],
+        'W' => [17, 17, 17, 21, 21, 21, 10],
+        'Y' => [17, 17, 10, 4, 4, 4, 4],
+        _ => [0; 7],
+    }
+}
+
+/// Width of `text` in the 5 x 7 font at dot size `px`.
+pub fn text_width(text: &str, px: f32) -> f32 {
+    (text.chars().count() as f32 * 6.0 - 1.0).max(0.0) * px
+}
+
+unsafe fn draw_ui(items: &[Ui]) {
+    use gl21 as gl;
+    let quad = |x: f32, y: f32, w: f32, h: f32| {
+        for (qx, qy) in [(x, y), (x + w, y), (x + w, y + h), (x, y + h)] {
+            let (vx, vy) = ndc(qx, qy);
+            gl::Vertex2f(vx, vy);
+        }
+    };
+    for it in items {
+        match it {
+            Ui::Rect([x, y, w, h], c) => {
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::Color4f(c[0], c[1], c[2], c[3]);
+                gl::Begin(gl::QUADS);
+                quad(*x, *y, *w, *h);
+                gl::End();
+                gl::Disable(gl::BLEND);
+            }
+            Ui::Frame([x, y, w, h], c, t) => {
+                gl::Color3f(c[0], c[1], c[2]);
+                gl::Begin(gl::QUADS);
+                quad(*x, *y, *w, *t);
+                quad(*x, y + h - t, *w, *t);
+                quad(*x, *y, *t, *h);
+                quad(x + w - t, *y, *t, *h);
+                gl::End();
+            }
+            Ui::Disc((cx, cy), r, c, rim) => {
+                for (rr, col) in [(r + 1.2, rim), (*r, c)] {
+                    gl::Color3f(col[0], col[1], col[2]);
+                    gl::Begin(gl::TRIANGLE_FAN);
+                    let (vx, vy) = ndc(*cx, *cy);
+                    gl::Vertex2f(vx, vy);
+                    for k in 0..=28 {
+                        let a = k as f32 / 28.0 * std::f32::consts::TAU;
+                        let (vx, vy) = ndc(cx + rr * a.cos(), cy + rr * a.sin());
+                        gl::Vertex2f(vx, vy);
+                    }
+                    gl::End();
+                }
+            }
+            Ui::Tri(p, c) => {
+                gl::Color3f(c[0], c[1], c[2]);
+                gl::Begin(gl::TRIANGLES);
+                for (x, y) in p {
+                    let (vx, vy) = ndc(*x, *y);
+                    gl::Vertex2f(vx, vy);
+                }
+                gl::End();
+            }
+            Ui::Text((x0, cy), text, px, c) => {
+                gl::Color3f(c[0], c[1], c[2]);
+                gl::Begin(gl::QUADS);
+                let y0 = cy - 3.5 * px;
+                for (i, ch) in text.chars().enumerate() {
+                    for (row, bits) in glyph5(ch.to_ascii_uppercase()).iter().enumerate() {
+                        for col in 0..5 {
+                            if bits & (16 >> col) != 0 {
+                                quad(x0 + (i as f32 * 6.0 + col as f32) * px, y0 + row as f32 * px, *px, *px);
+                            }
+                        }
+                    }
+                }
+                gl::End();
+            }
+        }
+    }
 }
 
 /// 3 x 5 glyphs for the badge labels (rows top down, bit 2 = left column).
@@ -165,7 +280,7 @@ impl Gfx {
         let _ = RENDER_SCALE.set(scale.clamp(1, 8));
         println!("render scale: {}", render_scale());
         let ctx = GLES1OnGL2Context::new(&mut window)?;
-        let mut g = Gfx { window, ctx, strings: HashMap::new(), present_fbo: 0, present_tex: 0, rotation, frames: 0, extra: false, extra_frames: 0, pointer: None, focus: None, badges: Vec::new(), capture_next: false, captured: None };
+        let mut g = Gfx { window, ctx, strings: HashMap::new(), present_fbo: 0, present_tex: 0, rotation, frames: 0, extra: false, extra_frames: 0, pointer: None, focus: None, badges: Vec::new(), ui: Vec::new(), capture_next: false, captured: None };
         let desc = unsafe { g.gl().driver_description() };
         println!("OpenGL: {}", desc.replace('\n', ", "));
         Ok(g)
@@ -183,6 +298,7 @@ impl Gfx {
         let pointer = self.pointer;
         let focus = self.focus;
         let badges = self.badges.clone();
+        let ui = self.ui.clone();
         let (mut fbo, mut tex) = (self.present_fbo, self.present_tex);
         {
             let _g = self.gl(); // makes the context current; gl21 calls below use it
@@ -254,6 +370,11 @@ impl Gfx {
                 gl::Vertex2f(u * 2.0 - 1.0, v * 2.0 - 1.0);
             }
             gl::End();
+            if !ui.is_empty() {
+                gl::LoadIdentity();
+                gl::Disable(gl::TEXTURE_2D);
+                draw_ui(&ui);
+            }
             if focus.is_some() || !badges.is_empty() {
                 gl::LoadIdentity();
                 gl::Disable(gl::TEXTURE_2D);
