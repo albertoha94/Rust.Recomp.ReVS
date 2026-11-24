@@ -44,6 +44,42 @@ fn read_unpacked(dir: &Path) -> Result<(String, Vec<u8>), String> {
     Ok((exe, data))
 }
 
+/// The game version the port is made for. The port hooks the game at fixed
+/// code addresses (lyt.rs, input.rs, interp.rs, tweaks.rs), so any other build
+/// of the game would set up and then misbehave.
+pub const SUPPORTED_VERSION: &str = "1.10.10";
+
+/// Fingerprints (64-bit FNV-1a) of the game's machine code, the first slice's
+/// `__TEXT,__text`. The code is the same in every buyer's copy, while the rest
+/// of an .ipa differs (iTunes metadata, signatures).
+const KNOWN_BUILDS: [(u64, &str); 2] = [(0x5666_300b_01f1_192c, "1.10.10"), (0x64f3_45af_924d_7517, "1.10.20")];
+
+/// Fingerprint of the game's code in `ipa`.
+pub fn code_fingerprint(ipa: &Path) -> Result<u64, String> {
+    let not_game = |e: String| format!("not an iOS game .ipa ({e})");
+    let (_, exe) = read_executable(ipa).map_err(not_game)?;
+    let bin = crate::macho::Binary::parse_first_slice(&exe).map_err(not_game)?;
+    let code = bin.bytes(bin.text.addr, bin.text.size).ok_or("the game's code section is unreadable")?;
+    Ok(code.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)))
+}
+
+/// Ok if `ipa` is the unedited game version the port supports; otherwise a
+/// message for the player that says which version it found.
+pub fn check_game(ipa: &Path) -> Result<(), String> {
+    let fp = code_fingerprint(ipa)?;
+    match KNOWN_BUILDS.iter().find(|(f, _)| *f == fp).map(|(_, v)| *v) {
+        Some(SUPPORTED_VERSION) => Ok(()),
+        Some(v) => Err(format!(
+            "this is version {v} of the game; the port needs version {SUPPORTED_VERSION} \
+             (Resident_Evil_Mercenaries_VS._{SUPPORTED_VERSION}_ios_4.2.ipa). Version {v} isn't supported yet."
+        )),
+        None => Err(format!(
+            "this isn't the unedited game the port needs (version {SUPPORTED_VERSION}, \
+             Resident_Evil_Mercenaries_VS._{SUPPORTED_VERSION}_ios_4.2.ipa): its code doesn't match (fingerprint {fp:016x})."
+        )),
+    }
+}
+
 /// Reads `Payload/<App>.app/<rel>` (a resource such as Info.plist or a nib)
 /// from the user's .ipa or unpacked folder, into memory.
 pub fn read_app_file(ipa: &Path, rel: &str) -> Result<Vec<u8>, String> {

@@ -1,5 +1,7 @@
 # Rust.Recomp.ReVS
 
+[![Get it on RecompLauncher](https://recomplauncher.com/assets/press/launcher/badge-dark.svg)](https://recomplauncher.com/)
+
 A native PC port of **Resident Evil: The Mercenaries VS.** (iOS, version 1.10.10). The build recompiles the game's
 own ARM code to C on your computer, from your own copy of the game, and runs it natively: no emulator. Written in
 Rust; works on Windows and Linux.
@@ -89,6 +91,9 @@ has checked it yet: please report what you find.
 Releases are Windows zips with **no game files in them**. A setup step recompiles the game on your PC from your own
 `Resident_Evil_Mercenaries_VS._1.10.10_ios_4.2.ipa` (unedited, from your own purchase). It takes about a minute,
 and needs nothing else installed: the zip brings a small C compiler (clang from llvm-mingw).
+
+Only version **1.10.10** works for now. Setup checks the game's code first and says so if your copy is another
+version (such as 1.10.20) or isn't the unedited game.
 
 - **RecompLauncher:** install the game, pick your `.ipa` when it asks, let setup finish, then Play. Saves go in the
   launcher's data folder.

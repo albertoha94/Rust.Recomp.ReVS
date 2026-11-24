@@ -251,7 +251,10 @@ long loops such as `_mceBoneDeformer_transPoints` need about 20,000,000 to finis
 `REVS_TRACE_FN=0xADDR,...` prints each call of those game functions (frame, r0-r3, return address; first 2,000
 lines; `REVS_TRACE_FROM=F` starts at presented frame F, `REVS_TRACE_VEC=1` adds the 3 floats each argument
 points to). `REVS_GLERR=1` prints each game GL call that raises a GL error (the error stays pending for the
-game). `REVS_WATCH=EXPR,...` prints a guest value whenever it changes (checked after each frame; `0xADDR`,
+game). `REVS_TEXLOG=1` prints every texture upload (GL name, mip level, format, size) and every glTexParameter
+(the game uploads level 0 only, no mipmaps, and re-sets the filters on every draw: LINEAR on 3D textures, NEAREST
+on most 2D images. Mipmaps with 16x anisotropic filtering were tried on the 3D textures and dropped: at the port's
+render scale, which already supersamples, they made no visible difference). `REVS_WATCH=EXPR,...` prints a guest value whenever it changes (checked after each frame; `0xADDR`,
 `*0xADDR+0xOFF` through a pointer, `b:` for a byte). Runner flags: `--key=F1-F2:NAME` holds a key (SDL name, e.g.
 `W`, `Space`, `Return`, `Left Shift`) from frame F1 to F2 through the controller/keyboard mapping;
 `--hold=F1-F2:x,y` keeps a second finger down from frame F1 to F2 (`>x2,y2` drags it there, for

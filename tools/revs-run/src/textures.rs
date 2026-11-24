@@ -65,6 +65,13 @@ pub fn init(build: &Path, dump: bool, upscale: bool) {
     *STATE.lock().unwrap() = Some(State { dump, load, dumped: HashSet::new(), replaced: HashSet::new(), auto });
 }
 
+/// REVS_TEXLOG=1: one line per texture upload (GL name, mip level, format,
+/// size) and per glTexParameter, to see how the game sets up its textures.
+fn tex_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("REVS_TEXLOG").is_some())
+}
+
 fn is_pvrtc(fmt: u32) -> bool {
     (0x8c00..=0x8c03).contains(&fmt)
 }
@@ -98,6 +105,11 @@ fn hash(fmt: u32, w: u32, h: u32, data: &[u8]) -> u64 {
 /// # Safety
 /// `data` points to the game's pixels (or is null); the GL context is current.
 pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, type_: u32, w: u32, h: u32, size: usize, data: *const u8) {
+    if tex_log() {
+        let mut tex = 0;
+        gl21::GetIntegerv(gl21::TEXTURE_BINDING_2D, &mut tex);
+        println!("texlog upload tex={tex} level={level} fmt={fmt:#x} {w}x{h}");
+    }
     let mut st = STATE.lock().unwrap();
     let Some(st) = st.as_mut() else { return };
     if level != 0 || target != gles11::TEXTURE_2D {
@@ -253,6 +265,11 @@ pub fn on_delete(names: &[u32]) {
 /// glTexParameter: replaced textures keep trilinear minification and LINEAR
 /// magnification, whatever the game asks for.
 pub fn filter(pname: u32, value: f32) -> f32 {
+    if tex_log() {
+        let mut tex = 0;
+        unsafe { gl21::GetIntegerv(gl21::TEXTURE_BINDING_2D, &mut tex) };
+        println!("texlog param tex={tex} pname={pname:#x} value={value}");
+    }
     if pname != gles11::TEXTURE_MIN_FILTER && pname != gles11::TEXTURE_MAG_FILTER {
         return value;
     }

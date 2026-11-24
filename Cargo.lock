@@ -348,6 +348,7 @@ dependencies = [
 name = "revs-prepare"
 version = "0.1.0"
 dependencies = [
+ "revs-analyze",
  "serde_json",
 ]
 

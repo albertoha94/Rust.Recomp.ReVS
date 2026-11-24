@@ -92,6 +92,8 @@ fn run() -> Result<(), String> {
             if !ipa.is_file() {
                 return Err(format!("{} not found", ipa.display()));
             }
+            // Before copying anything: the port only works with one game version.
+            revs_analyze::ipa::check_game(&ipa).map_err(|e| format!("{}: {e}", ipa.display()))?;
             if std::fs::canonicalize(&ipa).ok() != std::fs::canonicalize(&kept).ok() {
                 std::fs::copy(&ipa, &kept).map_err(|e| format!("copying {}: {e}", ipa.display()))?;
             }

@@ -132,8 +132,23 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("check") if args.len() >= 3 => {
+            let ipa = PathBuf::from(&args[2]);
+            match revs_analyze::ipa::code_fingerprint(&ipa) {
+                Ok(fp) => println!("code fingerprint {fp:016x}"),
+                Err(e) => eprintln!("error: {e}"),
+            }
+            match revs_analyze::ipa::check_game(&ipa) {
+                Ok(()) => println!("ok: version {}", revs_analyze::ipa::SUPPORTED_VERSION),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
-            eprintln!("usage: revs-analyze functions <game.ipa | library.dylib> [out_dir] [--base=0x...]");
+            eprintln!("usage: revs-analyze check <game.ipa>   (is it the game version the port supports?)");
+            eprintln!("       revs-analyze functions <game.ipa | library.dylib> [out_dir] [--base=0x...]");
             eprintln!("       revs-analyze recompile <game.ipa> [out_dir] [leaf|all] [--lib=<library out_dir>]...   (run `functions` first)");
             std::process::exit(2);
         }
