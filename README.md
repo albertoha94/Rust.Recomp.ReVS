@@ -35,7 +35,7 @@ has checked it yet: please report what you find.
 | Cleaner buttons, fonts and HUD: the port enlarges the game's 2D images itself (4x, edge-aware), no files needed | Tested (Windows: menus and a match, by script and by hand) |
 | Even cleaner: optional AI-upscaled 2D images you make on your own PC (see below) | Tested (Windows) |
 | Sharper character portraits in the lobby and character select | Tested (Windows) |
-| Outfit colours: 10 colours per character (Blue, Red, Yellow, Brown, Orange, Green, Gray, Purple, Teal, Black), picked on character select, COM players too (see below) | Tested (Windows: Training, by script) |
+| Outfit colours: 10 colours per character (Blue, Red, Yellow, Brown, Orange, Green, Gray, Purple, Teal, Black), picked on character select, COM players too (see below) | Tested (Windows: Training and two-window Local Match, by script) |
 
 ### Controls
 
@@ -188,7 +188,8 @@ one starts in its original outfit: Chris Green, Jill Blue, Wesker Black.
 - **Saved:** your colour for each character is kept in `port_colors.txt` in the save folder.
 
 The port paints the colours itself when the game loads the outfit, from recipes in `tools/colors.json` (numbers
-only, no game images). Colours are local for now: in a Local Match each window shows its own choices.
+only, no game images). In a Local Match between port windows, each player sees the others' colours too (a player
+on touchHLE sees none).
 
 ## Controls
 

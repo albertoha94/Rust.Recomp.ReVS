@@ -56,6 +56,9 @@ enum Frame {
     Deny = 3,
     Data = 4,
     Bye = 5,
+    /// The port's own: each window's outfit colours (recolor.rs). Never shown
+    /// to the game; touchHLE skips frame types it doesn't know.
+    Colors = 6,
 }
 
 impl Frame {
@@ -66,6 +69,7 @@ impl Frame {
             3 => Frame::Deny,
             4 => Frame::Data,
             5 => Frame::Bye,
+            6 => Frame::Colors,
             _ => return None,
         })
     }
@@ -659,6 +663,7 @@ fn poll(s: &mut Session, extra_hosts: &[String]) -> Vec<Event> {
                     alive = false;
                 }
                 Some(Frame::Data) if p.connected => events.push(Event::Data(id.clone(), payload)),
+                Some(Frame::Colors) if p.connected => crate::recolor::on_sync(&payload),
                 Some(Frame::Bye) => alive = false,
                 _ => {}
             }
@@ -681,6 +686,7 @@ fn poll(s: &mut Session, extra_hosts: &[String]) -> Vec<Event> {
 /// Called by the run loop: the network work of every live session, then the
 /// game's delegate methods and data handler for what happened.
 pub fn pump(h: &mut Host, c: &mut Cpu) {
+    send_colors();
     let extra = EXTRA_HOSTS.lock().unwrap().clone();
     let ids: Vec<u32> = SESSIONS.lock().unwrap().as_ref().map_or(Vec::new(), |m| m.keys().copied().collect());
     for session in ids {
@@ -704,6 +710,28 @@ pub fn pump(h: &mut Host, c: &mut Cpu) {
             dispatch(h, c, session, delegate, handler, context, e);
         }
         with(session, |s| s.in_callback = false);
+    }
+}
+
+/// The outfit colours to every connected window: at once when one changed
+/// here, else once a second (a window that joins late catches up).
+fn send_colors() {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    let due = last.is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
+    if !crate::recolor::take_changed() && !due {
+        return;
+    }
+    *last = Some(Instant::now());
+    let mut g = SESSIONS.lock().unwrap();
+    let Some(sessions) = g.as_mut() else { return };
+    let mut payload = None;
+    for s in sessions.values_mut() {
+        for p in s.peers.values_mut() {
+            if let Peer { connected: true, conn: Some(conn), .. } = p {
+                conn.send(Frame::Colors, payload.get_or_insert_with(crate::recolor::sync_payload));
+            }
+        }
     }
 }
 

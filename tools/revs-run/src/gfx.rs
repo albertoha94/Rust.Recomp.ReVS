@@ -844,6 +844,7 @@ pub fn call(h: &mut Host, c: &mut Cpu, name: &str) -> bool {
             }
             "glTexImage2D" => {
                 g.TexImage2D(a[0], int(1), int(2), int(3), int(4), int(5), a[6], a[7], p(8));
+                crate::recolor::UPLOAD_SRC.store(a[8], std::sync::atomic::Ordering::Relaxed);
                 crate::textures::on_upload(&mut *g, a[0], int(1), a[6], a[7], a[3], a[4], 0, p(8) as *const u8);
                 0
             }
@@ -853,6 +854,7 @@ pub fn call(h: &mut Host, c: &mut Cpu, name: &str) -> bool {
             }
             "glCompressedTexImage2D" => {
                 g.CompressedTexImage2D(a[0], int(1), a[2], int(3), int(4), int(5), int(6), p(7));
+                crate::recolor::UPLOAD_SRC.store(a[7], std::sync::atomic::Ordering::Relaxed);
                 crate::textures::on_upload(&mut *g, a[0], int(1), a[2], 0, a[3], a[4], a[6] as usize, p(7) as *const u8);
                 0
             }

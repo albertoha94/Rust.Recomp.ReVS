@@ -11,13 +11,16 @@
 //! Which player an upload belongs to: a match creates your character first
 //! (`GM_CtrlMain_Data::Create_ChPL`), then the other three
 //! (`Create_ChRPC(index)`, which asks `BioVS_Protocol::GetRPCPlayerNo` for
-//! the player number), and their outfit textures are uploaded afterwards in
-//! the same order. The port notes each player number as it is created and
-//! hands them out to the outfit uploads in turn.
+//! the player number). Each hands its character's texture data to
+//! `GM_Element_MdlTbl::Entry_ErpTex`; the upload later reads its pixels from
+//! inside that data. The port notes each data address with its player and
+//! looks the upload's pixel address up. (Uploads don't come in creation
+//! order: in a network match a player's texture may be shared with another
+//! player of the same character, or uploaded later.)
 
 use crate::Host;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 /// `GM_CtrlMain_Data::Create_ChPL()`: your character; the first of a match.
@@ -27,9 +30,16 @@ pub const GET_RPC_PLAYER_NO: u32 = 0x75acc;
 /// `BioVS_Protocol::GetEntryNameUncode(...)`: called every frame on the
 /// lobbies (the players' names); only its `this` is used.
 pub const GET_ENTRY_NAME: u32 = 0x77494;
-pub const HOOKS: [u32; 3] = [CREATE_CH_PL, GET_RPC_PLAYER_NO, GET_ENTRY_NAME];
+/// `GM_Element_MdlTbl::Entry_ErpTex(data)`: a character's texture data.
+pub const ENTRY_ERP_TEX: u32 = 0x163ebc;
+pub const HOOKS: [u32; 4] = [CREATE_CH_PL, GET_RPC_PLAYER_NO, GET_ENTRY_NAME, ENTRY_ERP_TEX];
 /// The return address of that call inside `Create_ChRPC` (it has other callers).
 const FROM_CREATE_CH_RPC: u32 = 0x11f27c;
+/// The return addresses of the `Entry_ErpTex` calls in `Create_ChPL` and `Create_ChRPC`.
+const ERP_FROM_PL: u32 = 0x11f208;
+const ERP_FROM_RPC: u32 = 0x11f4e0;
+/// How far into the data an upload's pixels may start (0xc4 seen).
+const ERP_SPAN: u32 = 0x1000;
 /// Your player number (0..3) in the protocol object, and the table of the others.
 const LOCAL_NO: u32 = 0x11e8;
 const PLAYER_TABLE: u32 = 0x31f14c;
@@ -254,7 +264,10 @@ pub fn characters() -> usize {
 // - the others (COM): the starting colour, or, when an earlier player
 //   already wears it on the same character, the next free one in the order;
 // - a colour picked for a player on character select (COM players too) is
-//   theirs while they keep that character.
+//   theirs while they keep that character;
+// - Local Match: the other windows send theirs (gamekit.rs, a port-only
+//   frame): each player's own colours, and the colours picked for COM
+//   players, so every window shows the same.
 
 #[derive(Default)]
 struct Choices {
@@ -267,7 +280,16 @@ struct Choices {
     file: Option<std::path::PathBuf>,
     /// The characters in the lobby (P1..P4), as last seen.
     lobby: [Option<usize>; 4],
+    /// Local Match: each other player's own colour per character, as their
+    /// window sent it.
+    remote: [HashMap<usize, usize>; 4],
+    /// The last COM pick each window sent, per (its player, COM player):
+    /// a new one is taken over as if picked here.
+    remote_picks: HashMap<(usize, usize), (usize, usize)>,
 }
+
+/// A colour changed here: send to the other windows now (gamekit.rs).
+static CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 static CHOICES: Mutex<Option<Choices>> = Mutex::new(None);
 
@@ -335,6 +357,10 @@ fn colour_in(s: &Choices, slot: usize, ch: usize, local: usize, depth: u32) -> u
     if slot == local {
         return s.saved.get(&ch).copied().unwrap_or(start);
     }
+    // Another window's own player.
+    if let Some(&c) = s.remote[slot].get(&ch) {
+        return c;
+    }
     // Colours earlier players wear on the same character.
     let taken: Vec<usize> = if depth > 4 {
         Vec::new()
@@ -364,6 +390,7 @@ pub fn pick(slot: usize, ch: usize, colour: usize) {
     let r = recipes();
     with(|s| {
         s.picked[slot.min(3)] = Some((ch, colour));
+        CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);
         if slot == local {
             s.saved.insert(ch, colour);
             if let Some(f) = &s.file {
@@ -380,30 +407,104 @@ pub fn pick(slot: usize, ch: usize, colour: usize) {
     println!("colors: P{} {} -> {}", slot + 1, r.chars.get(ch).map_or("?", |c| c.name.as_str()), r.order[colour]);
 }
 
+// ---- Local Match: the colours sent between windows.
+//
+// "colors1 TAB <your player> TAB <character>=<colour>,... TAB <player>:<character>=<colour>,..."
+// (indices): your colour for every character, then the colours picked here
+// for the other players (COM).
+
+/// True once after a colour changed here.
+pub fn take_changed() -> bool {
+    CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What this window sends to the others.
+pub fn sync_payload() -> Vec<u8> {
+    let local = local_player();
+    let n = characters();
+    with(|s| {
+        let own: Vec<String> = (0..n).map(|ch| format!("{ch}={}", colour_in(s, local, ch, local, 0))).collect();
+        let picks: Vec<String> =
+            (0..4).filter(|&p| p != local).filter_map(|p| s.picked[p].map(|(ch, c)| format!("{p}:{ch}={c}"))).collect();
+        format!("colors1\t{local}\t{}\t{}", own.join(","), picks.join(",")).into_bytes()
+    })
+}
+
+/// Another window's colours.
+pub fn on_sync(payload: &[u8]) {
+    let text = String::from_utf8_lossy(payload);
+    let f: Vec<&str> = text.split('\t').collect();
+    let [magic, from, own, picks] = f[..] else { return };
+    let (Ok(from), true) = (from.parse::<usize>(), magic == "colors1") else { return };
+    let local = local_player();
+    if from > 3 || from == local {
+        return;
+    }
+    let (r, n) = (recipes(), names().len());
+    let pair = |x: &str| -> Option<(usize, usize)> {
+        let (a, b) = x.split_once('=')?;
+        let (a, b) = (a.parse().ok()?, b.parse().ok()?);
+        (a < r.chars.len() && b < n).then_some((a, b))
+    };
+    with(|s| {
+        let theirs: HashMap<usize, usize> = own.split(',').filter_map(pair).collect();
+        if s.remote[from] != theirs {
+            for (&ch, &c) in &theirs {
+                if s.remote[from].get(&ch) != Some(&c) {
+                    println!("colors: P{} {} wears {} (from their window)", from + 1, r.chars[ch].name, r.order[c]);
+                }
+            }
+            s.remote[from] = theirs;
+        }
+        for x in picks.split(',') {
+            let Some((p, rest)) = x.split_once(':') else { continue };
+            let (Ok(p), Some(pick)) = (p.parse::<usize>(), pair(rest)) else { continue };
+            // Your own player and theirs keep their own colours.
+            if p > 3 || p == local || p == from {
+                continue;
+            }
+            if s.remote_picks.insert((from, p), pick) != Some(pick) {
+                s.picked[p] = Some(pick);
+                println!("colors: P{} {} -> {} (picked on P{}'s window)", p + 1, r.chars[pick.0].name, r.order[pick.1], from + 1);
+            }
+        }
+    });
+}
+
 // ---- Player numbers, as the match creates the characters.
 
-/// Player numbers in creation order; None = your own (known once the first
-/// other player is created).
-static QUEUE: Mutex<VecDeque<Option<u32>>> = Mutex::new(VecDeque::new());
+/// The guest address of the pixels being uploaded (gfx.rs, before on_upload).
+pub static UPLOAD_SRC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+struct Created {
+    /// The player of the character being created (None: yours).
+    current: Option<u32>,
+    /// Each character's texture data address and its player.
+    data: Vec<(u32, Option<u32>)>,
+}
+
+static CREATED: Mutex<Created> = Mutex::new(Created { current: None, data: Vec::new() });
 
 /// At the entry of a HOOKS function.
 pub fn on_enter(h: &Host, addr: u32, r0: u32, r1: u32, lr: u32) {
     if addr == GET_RPC_PLAYER_NO || addr == GET_ENTRY_NAME {
         LOCAL.store((h.rd32(r0 + LOCAL_NO) as usize).min(3), std::sync::atomic::Ordering::Relaxed);
     }
-    let mut q = QUEUE.lock().unwrap();
+    let mut c = CREATED.lock().unwrap();
     match addr {
         CREATE_CH_PL => {
             // A new match: anything left from the last one is stale.
-            q.clear();
-            q.push_back(None);
+            c.data.clear();
+            c.current = None;
         }
         GET_RPC_PLAYER_NO if lr == FROM_CREATE_CH_RPC => {
             let local = h.rd32(r0 + LOCAL_NO);
-            for e in q.iter_mut().filter(|e| e.is_none()) {
-                *e = Some(local);
-            }
-            q.push_back(Some(h.rd32(PLAYER_TABLE + (local * 3 + r1) * 4)));
+            c.current = Some(h.rd32(PLAYER_TABLE + (local * 3 + r1) * 4));
+        }
+        ENTRY_ERP_TEX if lr == ERP_FROM_PL => c.data.push((r1, None)),
+        ENTRY_ERP_TEX if lr == ERP_FROM_RPC => {
+            let p = c.current;
+            c.data.push((r1, p));
         }
         _ => {}
     }
@@ -422,7 +523,9 @@ pub struct Variant {
 pub fn take(key: u64) -> Option<Variant> {
     let r = recipes();
     let ch = r.chars.iter().position(|c| c.hash == key)?;
-    let player = QUEUE.lock().unwrap().pop_front().map(|p| p.unwrap_or(0))?;
+    let src = UPLOAD_SRC.load(std::sync::atomic::Ordering::Relaxed);
+    let player = CREATED.lock().unwrap().data.iter().find(|&&(d, _)| src.wrapping_sub(d) < ERP_SPAN).map(|&(_, p)| p)?;
+    let player = player.unwrap_or(local_player() as u32);
     let look = colour_of(player as usize, ch);
     if matches!(r.chars[ch].looks.get(look), None | Some(Look::Original)) {
         return None;
@@ -692,6 +795,21 @@ mod tests {
         let (w, h, mut px) = crate::textures::png_read(&std::fs::read(a[0]).unwrap()).unwrap();
         super::apply(super::Variant { ch, look, player: 0 }, w, h, &mut px);
         std::fs::write(a[3], crate::textures::png_write(w, h, &px)).unwrap();
+    }
+
+    /// Another window's colours: its own player's, and its COM picks (not
+    /// for our player, whose colours stay ours); this window is player 1.
+    #[test]
+    fn sync_from_another_window() {
+        super::on_sync(b"colors1\t1\t0=1,1=2,2=3\t2:0=7,0:0=4");
+        assert_eq!(super::colour_of(1, 0), 1, "P2 Chris, as their window says");
+        assert_eq!(super::colour_of(1, 2), 3, "P2 Wesker");
+        assert_eq!(super::colour_of(2, 0), 7, "P3 (COM) Chris, picked on P2's window");
+        assert_eq!(super::colour_of(0, 0), super::recipes().chars[0].start, "our own colour stays ours");
+        let mine = String::from_utf8(super::sync_payload()).unwrap();
+        assert!(mine.starts_with("colors1\t0\t") && mine.contains("2:0=7"), "{mine}");
+        super::on_sync(b"garbage");
+        super::on_sync(b"colors1\t9\t0=1\t");
     }
 
     #[test]

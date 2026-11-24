@@ -49,12 +49,20 @@ struct State {
 
 static STATE: Mutex<State> = Mutex::new(State { screen: Screen::Other, edit: None, sel_ch: None, portraits: [None; 4] });
 
-/// The lobby's portraits and characters, if this is a lobby.
+/// The lobby's portraits and characters, if this is a lobby. In a Local
+/// Match lobby only your own portrait is a live button; the others' are
+/// hidden buttons whose pictures the game still draws (dimmed).
 fn lobby(btns: &[Btn]) -> Option<([Option<[f32; 4]>; 4], [Option<usize>; 4])> {
+    let portrait = |b: &Btn| b.name.starts_with("BtnChara") && b.name.ends_with('P');
+    // Once everyone is ready, your own portrait is hidden too.
+    let hidden = lyt::hidden_buttons();
+    if !btns.iter().chain(hidden.iter()).any(portrait) {
+        return None;
+    }
     let mut rects = [None; 4];
     let mut chars = [None; 4];
-    for (i, b) in btns.iter().filter_map(|b| Some((b.name.strip_prefix("BtnChara")?.strip_suffix('P')?.parse::<usize>().ok()?, b))) {
-        if (1..=4).contains(&i) {
+    for (i, b) in btns.iter().chain(hidden.iter().filter(|b| portrait(b))).filter_map(|b| Some((b.name.strip_prefix("BtnChara")?.strip_suffix('P')?.parse::<usize>().ok()?, b))) {
+        if (1..=4).contains(&i) && rects[i - 1].is_none() {
             rects[i - 1] = Some(b.rect);
             // The portrait among the button's pictures (frames, marks...).
             let pic = b.pics.iter().find(|p| p[2] == PORTRAIT_W && p[3] == PORTRAIT_H && p[0] % PORTRAIT_W == 0);
@@ -92,7 +100,8 @@ pub fn frame(btns: &[Btn], menu: bool) -> Vec<Ui> {
     }
     if let Some((rects, chars)) = lobby(btns) {
         s.screen = Screen::Lobby;
-        s.portraits = rects;
+        // Pressable: your own portrait, and COM ones on the host (live buttons).
+        s.portraits = [0, 1, 2, 3].map(|i| btns.iter().find(|b| b.name == format!("BtnChara{}P", i + 1) && b.enabled).map(|b| b.rect));
         recolor::set_lobby(chars);
         for (slot, (r, ch)) in rects.iter().zip(chars).enumerate() {
             let (Some(r), Some(ch)) = (r, ch) else { continue };

@@ -391,7 +391,7 @@ Local Match (Phase 4 milestone 4, 2026-11-20; `tools/revs-run/src/gamekit.rs`): 
 (adapted from the touchHLE fork's `gk_session.rs`, MPL-2.0) with the same wire protocol, so port windows can play
 each other and touchHLE. Discovery: UDP on ports 41794-41801, `touchHLE-GKSession-1<TAB>session<TAB>peer<TAB>mode<TAB>tcpport<TAB>name`
 announced to this computer, the LAN broadcast address and each `--gk-peer=HOST`; data: TCP frames
-`[u32 LE length][u8 type][payload]` (Hello 1, Accept 2, Deny 3, Data 4, Bye 5). Delegate calls
+`[u32 LE length][u8 type][payload]` (Hello 1, Accept 2, Deny 3, Data 4, Bye 5; port-only: Colors 6). Delegate calls
 (`session:peer:didChangeState:`, connection requests, failures) and the data handler run from the run loop.
 The game's own C++ wrapper (`gkcpp::GKSessionCPPWrapper`) needed two more Foundation methods: `-[NSString
 longLongValue]` (peer IDs become 64-bit numbers; without it every peer was 0, listed as "unknown", and joining
@@ -517,9 +517,13 @@ character the outfit hash, the starting colour (shown as the original texture) a
   recolours one image.
 - Which player an upload belongs to: the match creates your character (`GM_CtrlMain_Data::Create_ChPL` 0x11f054),
   then the others (`Create_ChRPC`, each calling `BioVS_Protocol::GetRPCPlayerNo` 0x75acc, return address 0x11f27c,
-  whose result is the player number), and uploads the outfits afterwards in the same order. Hooks on both queue the
-  player numbers; each outfit upload takes the next one. Your own number is read from the protocol object
-  (`+0x11e8`) there and on `GetEntryNameUncode` 0x77494, which the lobby calls every frame.
+  whose result is the player number). Each passes its character's texture data to
+  `GM_Element_MdlTbl::Entry_ErpTex` 0x163ebc (return addresses 0x11f208 and 0x11f4e0); the outfit upload later reads
+  its pixels from inside that data (0xc4 in). Hooks note each data address with its player, and an upload is matched
+  by its pixel address (`gfx.rs` passes it as `UPLOAD_SRC`). Upload order can't be used: in a Local Match the other
+  human's outfit is often uploaded only once their character appears (seen at about 60 s into a match). Your own
+  number is read from the protocol object (`+0x11e8`) there and on `GetEntryNameUncode` 0x77494, which the lobby
+  calls every frame.
 - Choices: yours per character, saved in `<home>/port_colors.txt` ("Chris Red" per line); a colour picked on
   character select for any player while they keep that character; else (COM) the starting colour, or the next
   free one in the order when an earlier player wears it on the same character. `--colors=P1:Red,P3:Teal` forces
@@ -538,4 +542,10 @@ character the outfit hash, the starting colour (shown as the original texture) a
   uploaded (after any enlarging) the port keeps its pixels (`textures.rs` `keep_art`); on character select
   `show_art` paints the character on show in its player's colour and puts it back with `glTexSubImage2D` (about
   5-130 ms per change, the game's GL state left as it was), and the original again off that screen.
-- Not yet: the colours aren't sent between players (each window shows its own choices).
+- Local Match: each window sends its colours to the others in a port-only frame, `Colors` (type 6), on a change
+  and once a second: `colors1<TAB>player<TAB>Chris=1,Jill=0,...<TAB>2:0=7,...` (its player number, its own colour
+  per character as indexes, and the colours it picked for other players, `player:character=colour`, such as COMs
+  on the host). The receiver keeps the sender's own colours as that player's and applies a pick when it changes.
+  touchHLE ignores frame types it doesn't know, so mixed games still work (the touchHLE side just shows no colours).
+  In that lobby only your own portrait is a live button (none once everyone is ready); the others' are hidden buttons (`lyt.rs` keeps them as
+  `hidden_buttons`) whose pictures the game still draws, which is where their dots go.

@@ -238,6 +238,11 @@ struct Lists {
     /// Visible pictures named Img*, with their sheet area (this frame, last).
     current_imgs: Vec<(String, [u32; 4])>,
     last_imgs: Vec<(String, [u32; 4])>,
+    /// Hidden buttons inside drawn layouts, with their (visible) pictures:
+    /// the game draws those pictures anyway (another player's lobby
+    /// portrait, dimmed). Not for the focus.
+    current_hidden: Vec<Btn>,
+    last_hidden: Vec<Btn>,
     /// Class of each vtable seen (None: not a button).
     kinds: HashMap<u32, Option<Kind>>,
 }
@@ -297,8 +302,36 @@ fn dump(h: &Host, o: u32, depth: u32) {
     }
 }
 
+/// The visible pictures among a part's children (their sheet areas).
+fn pics_of(h: &Host, o: u32) -> Vec<[u32; 4]> {
+    let (n, kids) = (h.rd32(o + 0x18), h.rd32(o + 0xc));
+    let mut pics = Vec::new();
+    if kids != 0 && n < 64 {
+        for i in 0..n {
+            let k = h.rd32(kids + 4 * i);
+            if k == 0 {
+                continue;
+            }
+            let src = [0x98, 0x9c, 0xa0, 0xa4].map(|o| h.rd32(k + o));
+            if h.rd8(k + 0x51) != 0 && src[2] > 0 && src[2] < 4096 {
+                pics.push(src);
+            }
+        }
+    }
+    pics
+}
+
 fn walk(h: &Host, l: &mut Lists, o: u32, root: &str, depth: u32) {
-    if o == 0 || depth > 16 || h.rd8(o + 0x51) == 0 {
+    if o == 0 || depth > 16 {
+        return;
+    }
+    if h.rd8(o + 0x51) == 0 {
+        // Hidden: only a hidden button's pictures are noted.
+        if depth > 0 && kind_of(h, l, o).is_some() {
+            let name = name_of(h, o);
+            let (kind, rect, pics) = (kind_of(h, l, o).unwrap(), rect_of(h, o), pics_of(h, o));
+            l.current_hidden.push(Btn { name, root: root.to_string(), kind, enabled: false, rect, pics });
+        }
         return;
     }
     let name = name_of(h, o);
@@ -317,19 +350,7 @@ fn walk(h: &Host, l: &mut Lists, o: u32, root: &str, depth: u32) {
             }
         }
         let enabled = h.rd8(o + 0x50) != 0;
-        let mut pics = Vec::new();
-        if kids != 0 && n < 64 {
-            for i in 0..n {
-                let k = h.rd32(kids + 4 * i);
-                if k == 0 {
-                    continue;
-                }
-                let src = [0x98, 0x9c, 0xa0, 0xa4].map(|o| h.rd32(k + o));
-                if h.rd8(k + 0x51) != 0 && src[2] > 0 && src[2] < 4096 {
-                    pics.push(src);
-                }
-            }
-        }
+        let pics = pics_of(h, o);
         l.current.push(Btn { name, root: root.to_string(), kind, enabled, rect: rect_of(h, o), pics });
         // A button's children are its own pictures and texts.
         return;
@@ -354,6 +375,7 @@ pub fn on_draw(h: &Host, this: u32) {
         l.last = std::mem::take(&mut l.current);
         l.last_roots = std::mem::take(&mut l.current_roots);
         l.last_imgs = std::mem::take(&mut l.current_imgs);
+        l.last_hidden = std::mem::take(&mut l.current_hidden);
         l.frame = frame;
         // REVS_LYT=1: print the buttons on screen every 30 frames.
         if frame % 30 == 0 && std::env::var_os("REVS_LYT").is_some() {
@@ -388,6 +410,13 @@ pub fn roots() -> Vec<String> {
 pub fn image(name: &str) -> Option<[u32; 4]> {
     let guard = LISTS.lock().unwrap();
     guard.as_ref()?.last_imgs.iter().find(|e| e.0 == name).map(|e| e.1)
+}
+
+/// Hidden buttons in the drawn layouts of the last complete frame (with the
+/// pictures the game still draws for them).
+pub fn hidden_buttons() -> Vec<Btn> {
+    let guard = LISTS.lock().unwrap();
+    guard.as_ref().map_or(Vec::new(), |l| l.last_hidden.clone())
 }
 
 /// The buttons on screen in the last complete frame.

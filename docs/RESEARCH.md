@@ -181,12 +181,12 @@ Recommended: start with (b) for one character as a test. It also builds the 3D-t
 
 **Done (2026-11-24): (b) for Chris, Jill and Wesker**, 10 colours each, picked on character select and shown in the
 lobby (DEVELOPMENT.md, "Outfit colours"). Two players on the same character don't share a texture: each character
-instance uploads its own copy, so no second texture name was needed. Still open: sending the colours to the other
-players.
+instance uploads its own copy, so no second texture name was needed. Sent between port windows in a Local Match
+(2026-11-24).
 
 ## Suggested order
 
 1. ~~3D textures decoded and replaceable by hash~~ (done 2026-11-24; needed by 2 and 5). Next: upscale them with Real-ESRGAN.
-2. ~~Colour variants by recipe~~ (done 2026-11-24, all three characters). Next: send them between players.
+2. ~~Colour variants by recipe~~ (done 2026-11-24, all three characters, sent between players in a Local Match).
 3. Enemy deaths synced between port players, then full host-owned enemies.
 4. The file overlay (`mods/`) for new models, maps and layouts.
