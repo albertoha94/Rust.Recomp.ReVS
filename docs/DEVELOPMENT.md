@@ -458,9 +458,13 @@ starts with that hash is uploaded instead. Replaced textures are always filtered
 many 2D images). These images are made from your own game: they stay in the git-ignored `build/` and are never
 shared or committed. To make them:
 
-1. `revs-run.exe build --dump-textures` and visit the screens you want: the 2D images (8-bit palette and RGBA; the
-   PVRTC ones are 3D) are saved to `build/textures/dump/<hash>_<w>x<h>.png`, with the colour under transparent
-   pixels filled in from their neighbours so an upscaler leaves no fringes.
+1. `revs-run.exe build --dump-textures` and visit the screens you want: the images (8-bit palette and RGBA, 2D and
+   3D) are saved to `build/textures/dump/<hash>_<w>x<h>.png`, and the PVRTC ones (3D only: characters, stages,
+   decoded to RGBA first) as `<hash>_<w>x<h>_pvrtc.png`; both load back the same way, by hash. Each is saved with
+   the colour under transparent pixels filled in from their neighbours so an upscaler leaves no fringes.
+   `revs-run.exe build --extract-textures` saves every 3D texture straight from the .ipa the same way (characters,
+   enemies, all three stages, weapons, props), with no playing, plus `index.txt` naming each one's archive file and
+   slot (`src/mcts.rs`).
 2. `tools/upscale-textures.ps1 [-Tool <folder>]` upscales the images listed in `tools/textures.txt` 4x with
    [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) (`realesrgan-ncnn-vulkan`, not part of this repository):
    `ui` with the anime model, `photo` with the general one, `font` with the general one plus a sharpened alpha

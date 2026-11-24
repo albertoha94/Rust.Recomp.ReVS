@@ -1,9 +1,9 @@
-# Upscales the game's 2D images saved by `revs-run --dump-textures` (buttons, icons, fonts, HUD) with
+# Upscales the game's images saved by `revs-run --dump-textures` (buttons, icons, fonts, HUD, 3D atlases) with
 # Real-ESRGAN, for the port to load instead of the originals.
 #
 #   build\textures\dump\<hash>_<w>x<h>.png  ->  build\textures\load\<hash>_<w>x<h>[.font|.sharp].png
 #
-# tools\textures.txt says which images to do and how (3D images and effects are left out). Only images
+# tools\textures.txt says which images to do and how (2D images, and 3D atlases as `model`). Only images
 # not in load\ yet are done, so it can be run again after more dumping; -Force redoes all of them.
 # Real-ESRGAN (realesrgan-ncnn-vulkan, from github.com/xinntao/Real-ESRGAN releases) is not part of this
 # repository: pass its folder with -Tool. Both folders hold images made from your own game: they stay in
@@ -19,7 +19,7 @@ if (-not (Test-Path $exe)) { throw "Real-ESRGAN not found: $exe (pass -Tool <fol
 $dump = Join-Path $Build "textures\dump"
 $load = Join-Path $Build "textures\load"
 New-Item -ItemType Directory -Force $load | Out-Null
-$models = @{ ui = "realesrgan-x4plus-anime"; photo = "realesrgan-x4plus"; font = "realesrgan-x4plus"; sharp = "" }
+$models = @{ ui = "realesrgan-x4plus-anime"; photo = "realesrgan-x4plus"; model = "realesrgan-x4plus"; font = "realesrgan-x4plus"; sharp = "" }
 $kinds = @{}
 foreach ($line in Get-Content (Join-Path $PSScriptRoot "textures.txt")) {
     $p = ($line -replace "#.*", "").Trim() -split "\s+"

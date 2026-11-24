@@ -33,6 +33,7 @@ mod import;
 mod interp;
 mod input;
 mod lyt;
+mod mcts;
 mod textures;
 mod tweaks;
 mod net;
@@ -428,6 +429,10 @@ fn main() {
     // (textures.rs); replacements are read from <build>/textures/load.
     let dump_textures = args.iter().any(|a| a == "--dump-textures");
     args.retain(|a| a != "--dump-textures");
+    // --extract-textures: save every 3D texture from the .ipa to the same
+    // folder, named the same way, then quit (mcts.rs). No playing needed.
+    let extract_textures = args.iter().any(|a| a == "--extract-textures");
+    args.retain(|a| a != "--extract-textures");
     // --upscale=off: no built-in enlargement of the 2D images (files in
     // textures/load are still used).
     let upscale = !args.iter().any(|a| a == "--upscale=off");
@@ -514,6 +519,12 @@ fn main() {
         println!("files: {e}");
     } else {
         println!("files: bundle {} from the .ipa (read-only), home {}", h.fs.bundle_path, home.display());
+    }
+    if extract_textures {
+        let out = build.join("textures").join("dump");
+        let n = mcts::extract(&mut h.fs, &out);
+        println!("textures: saved {n} 3D textures to {} (list: index.txt)", out.display());
+        return;
     }
 
     // 1. Load every image.

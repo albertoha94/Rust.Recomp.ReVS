@@ -53,7 +53,9 @@ it but you still see it" without moving positions. Enemies would still wander di
 ## 2. Better textures and models
 
 What exists now: 2D images (menus, HUD, fonts) are enlarged 4x by the port or replaced by the user's own AI
-upscales (`textures/load`). 3D textures (characters, stages) are PVRTC, a compressed format, and the hook skips them.
+upscales (`textures/load`). 3D textures (characters, stages) are PVRTC, a compressed format. Since 2026-11-24 they
+go through the same dump/load path (decoded to RGBA, dumped as `<hash>_<w>x<h>_pvrtc.png`, replaceable by hash with
+mipmaps); tested on the Docks stage atlas (1024, loaded 4x as 4096) and Chris's 512 atlas.
 
 | Option | Work | Result |
 |---|---|---|
@@ -179,7 +181,7 @@ Recommended: start with (b) for one character as a test. It also builds the 3D-t
 
 ## Suggested order
 
-1. 3D textures decoded and replaceable by hash (needed by 2 and 5).
+1. ~~3D textures decoded and replaceable by hash~~ (done 2026-11-24; needed by 2 and 5). Next: upscale them with Real-ESRGAN.
 2. Colour variants by recipe for one character.
 3. Enemy deaths synced between port players, then full host-owned enemies.
 4. The file overlay (`mods/`) for new models, maps and layouts.

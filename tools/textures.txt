@@ -1,4 +1,4 @@
-# Which of the game's 2D images get enlarged, and how: by revs-run itself (built in, compiled from this file) and
+# Which of the game's images get enlarged, and how: by revs-run itself (built in, compiled from this file) and
 # by tools/upscale-textures.ps1 (Real-ESRGAN, optional; its files win). Each line: the texture hash (the name
 # `revs-run --dump-textures` gives it, from the unedited 1.10.10 .ipa), a kind, a note.
 # The hashes only identify the user's own files; no game content is stored here.
@@ -9,9 +9,12 @@
 #   font   small text sheets                x4plus; glyph edges sharpened  edge-aware 4x, firm sharpen, soft edge step
 #   sharp  tiny pictures (40 px faces)      no AI (it invents detail):     bicubic 4x + a mild sharpen
 #                                           the port enlarges them itself
+#   model  3D atlases (characters, stages;  x4plus                         none: Real-ESRGAN only (a 4x of a
+#          PVRTC, dumped as *_pvrtc.png)                                   1024 atlas is too slow at load)
 #
-# Images not listed are left as they are: 3D models, effects, scenery, and some 2D ones that looked worse
-# upscaled (stage thumbnails came out smeared; the menu panels' soft scanlines came out as hard white lines).
+# Images not listed are left as they are: lightmaps (baked shadows, meant to be soft), small 3D bits, effects,
+# and some 2D ones that looked worse upscaled (stage thumbnails came out smeared; the menu panels' soft
+# scanlines came out as hard white lines).
 10cd8e16b58af475 ui     round menu icons
 1f7cd367695d3dc5 ui     logos and metal background
 320039f9377ed309 ui     scope and dark panels
@@ -32,3 +35,59 @@ f52f165001d08abf ui     round HUD parts
 15ef9d7494941d83 sharp  character portraits, framed (lobby rows)
 c3f8df546a3b7101 sharp  character portraits (character select)
 e58389e3b234fda7 photo  character art (character select)
+b9d0f460448a9e07 model  Docks stage (rock, bricks, crates, door)
+f19809ab9e3a9a51 model  Chris
+8ce1c573307acd24 model  Jill
+6909a0e6f8e93368 model  Wesker
+e500628275ea8990 model  zombie (bearded)
+229d8412680b4ec0 model  zombie (dark hair)
+048fdb5d7306920e model  door
+1fd32ea6dfa1ee9d model  rusty barrel
+# 3D atlases found with `revs-run --extract-textures` (every one in the .ipa; index.txt names the archive
+# file and slot). Left out: lightmaps, water, effects, glows, the muzzle flash, and the 64 px weapon and plaga bits.
+29972199470f8fd3 model  plaga equipment, 128x128 (eqp_plg_all.mcts #2)
+fbbf7b66ea5e28db model  weapon, 128x64 (eqp_wep_all.mcts #0)
+f89f370211cafc91 model  weapon, 128x64 (eqp_wep_all.mcts #1)
+7f0629505a503d1b model  weapon, 128x64 (eqp_wep_all.mcts #2)
+21ba81daa0c1057e model  weapon, 128x64 (eqp_wep_all.mcts #3)
+3699b51d1f2ccb97 model  weapon, 128x64 (eqp_wep_all.mcts #4)
+3d617762a4e60bdd model  weapon, 128x64 (eqp_wep_all.mcts #13)
+bd2e654c8b9c8aa2 model  weapon, 128x64 (eqp_wep_all.mcts #14)
+461c71da3c536756 model  weapon, 128x64 (eqp_wep_all.mcts #16)
+c2a0c744a4e484c5 model  weapon, 128x64 (eqp_wep_all.mcts #17)
+3c0fee652fc21340 model  weapon, 128x64 (eqp_wep_all.mcts #18)
+f792e120a0066bb6 model  weapon, 128x128 (eqp_wep_all.mcts #19)
+7e3f075f33968d8e model  weapon, 128x64 (eqp_wep_all.mcts #20)
+a31185398854bc80 model  weapon, 256x256 (eqp_wep_all.mcts #21)
+9554ce77b3861040 model  weapon, 128x128 (eqp_wep_all.mcts #22)
+8b7c1ae63011ea43 model  weapon, 128x64 (eqp_wep_all.mcts #23)
+1ea0f33608895836 model  weapon, 256x128 (eqp_wep_all.mcts #24)
+d66063da2974af4c model  weapon, 128x64 (eqp_wep_all.mcts #25)
+8896115f53d7ebec model  weapon, 128x128 (eqp_wep_all.mcts #26)
+1d94fe68a3e7a52e model  prop, 256x256 (fix_all.mcts #6)
+f78a953e1f0dbfa1 model  prop, 128x128 (fix_all.mcts #11)
+9014d2ba9f5b7757 model  prop, 256x256 (fix_all.mcts #13)
+37012bf845b09de6 model  prop, 256x256 (fix_all.mcts #14)
+7943ec8641c453ff model  prop, 128x128: time-bonus pickup, the gold stacks (fix_all.mcts #15)
+9615b617e4a9e77f model  chainsaw enemy, 256x256 (ch_cha.mcts #0)
+f16d83defb26d77b model  gatling enemy, 256x256 (ch_gat.mcts #0)
+644fc4d746e4fc8a model  enemy (jya), 256x256 (ch_jya_all.mcts #0)
+5a4be0159b2842ff model  enemy (jya), 256x256 (ch_jya_all.mcts #1)
+c74d8ac5ff8bd4cf model  enemy (jya), 256x256 (ch_jya_all.mcts #2)
+02e73e684ba99a33 model  enemy (sen), 256x256 (ch_sen.mcts #0)
+19a62610aa9e2819 model  enemy (sen), 256x256 (ch_sen.mcts #1)
+a1d7f0a59dd58928 model  Docks stage (stg_01_h.mcts #1)
+414a5c204becc8ec model  Docks stage (low detail) (stg_01_l.mcts #0)
+d5c3e4c6fef07909 model  stage 2 (stg_02_h.mcts #0)
+c6f4471f5d4a3b5b model  stage 2 (stg_02_h.mcts #1)
+12af6b055ea5775f model  stage 3 (stg_03_h.mcts #0)
+405cc6e437f01c94 model  stage 3, 256x256 (stg_03_h.mcts #1)
+80abaa71d1bbd1f6 model  prop, 64x64: wood rail (fix_all.mcts #2)
+3d1dfadc3fdee92e model  prop, 64x64: wood planks (fix_all.mcts #4)
+9636aa996a7df833 model  prop, 64x64: yellow sign (fix_all.mcts #5)
+6b8529236cb10f00 model  prop, 64x64: blue emblem (fix_all.mcts #8)
+690651c897de8291 model  prop, 64x64: gold bands (fix_all.mcts #9)
+c56a90aca179256f model  prop, 64x64: camo strip (fix_all.mcts #10)
+78cae50e8b6e2d52 model  prop, 64x64: crates (fix_all.mcts #16)
+d21c9d51b216af5f model  prop, 64x64: white emblem (fix_all.mcts #17)
+01996534949b41a1 model  prop, 64x64: riveted metal (fix_all.mcts #18)

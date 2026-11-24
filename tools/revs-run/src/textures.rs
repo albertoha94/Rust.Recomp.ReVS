@@ -1,10 +1,12 @@
-//! Replacement textures: cleaner, bigger versions of the game's 2D images
-//! (buttons, icons, fonts, HUD), loaded from a local folder.
+//! Replacement textures: cleaner, bigger versions of the game's images (2D:
+//! buttons, icons, fonts, HUD; 3D: characters and stages), loaded from a
+//! local folder.
 //!
 //! Every texture the game uploads is named by a hash of the data it gave
-//! (format, size, bytes). `--dump-textures` saves the 2D ones (8-bit palette
-//! and plain RGBA; PVRTC is the 3D models) as `<build>/textures/dump/
-//! <hash>_<w>x<h>.png`. A PNG of any size in `<build>/textures/load/` whose
+//! (format, size, bytes). `--dump-textures` saves them as `<build>/textures/
+//! dump/<hash>_<w>x<h>.png` (8-bit palette and plain RGBA, used for 2D and
+//! 3D) or `..._pvrtc.png` (PVRTC: 3D only, decoded to RGBA by the GL layer
+//! first). A PNG of any size in `<build>/textures/load/` whose
 //! name starts with the same hash is uploaded instead of the game's image.
 //! Texture coordinates are 0..1, so a bigger image draws in the same place.
 //! A `*.font.png` (a text sheet) gets its glyph edges sharpened on loading;
@@ -89,7 +91,7 @@ fn tex_bytes(format: u32, type_: u32, w: u32, h: u32) -> usize {
     px * w as usize * h as usize
 }
 
-fn hash(fmt: u32, w: u32, h: u32, data: &[u8]) -> u64 {
+pub(crate) fn hash(fmt: u32, w: u32, h: u32, data: &[u8]) -> u64 {
     // FNV-1a, 64-bit.
     let mut x: u64 = 0xcbf29ce484222325;
     for b in fmt.to_le_bytes().iter().chain(&w.to_le_bytes()).chain(&h.to_le_bytes()).chain(data) {
@@ -124,7 +126,7 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::GENERATE_MIPMAP, gl21::FALSE as _);
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::TEXTURE_MIN_FILTER, gl21::LINEAR as _);
     }
-    if data.is_null() || is_pvrtc(fmt) {
+    if data.is_null() {
         return;
     }
     let size = if size > 0 { size } else { tex_bytes(fmt, type_, w, h) };
@@ -138,7 +140,10 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
             gl21::PixelStorei(gl21::PACK_ALIGNMENT, 1);
             gl21::GetTexImage(gl21::TEXTURE_2D, 0, gl21::RGBA, gl21::UNSIGNED_BYTE, px.as_mut_ptr() as *mut _);
             bleed(w as usize, h as usize, &mut px);
-            let _ = std::fs::write(dir.join(format!("{key:016x}_{w}x{h}.png")), png_write(w, h, &px));
+            // PVRTC (the 3D models' and stages' textures; the GL layer decoded
+            // them to RGBA, so they read back like the others) get a tag.
+            let tag = if is_pvrtc(fmt) { "_pvrtc" } else { "" };
+            let _ = std::fs::write(dir.join(format!("{key:016x}_{w}x{h}{tag}.png")), png_write(w, h, &px));
         }
     }
     let mut tex_w = w;
@@ -613,7 +618,7 @@ fn sharpen_alpha(px: &mut [u8]) {
 /// (alpha stays 0, so the image looks the same). An upscaler works on colour
 /// and alpha apart: leftover colour under transparent pixels would otherwise
 /// bleed into the edges of glyphs and buttons as a coloured fringe.
-fn bleed(w: usize, h: usize, px: &mut [u8]) {
+pub(crate) fn bleed(w: usize, h: usize, px: &mut [u8]) {
     let mut known: Vec<bool> = px.chunks(4).map(|p| p[3] != 0).collect();
     for _ in 0..8 {
         let mut next = known.clone();
@@ -652,7 +657,7 @@ fn bleed(w: usize, h: usize, px: &mut [u8]) {
 }
 
 /// RGBA8 -> PNG (no filtering, zlib from flate2).
-fn png_write(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+pub(crate) fn png_write(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut raw = Vec::with_capacity(rgba.len() + h as usize);
     for row in rgba.chunks(w as usize * 4) {
