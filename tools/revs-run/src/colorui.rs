@@ -1,6 +1,7 @@
 //! The port's colour menus (the colours themselves: recolor.rs).
 //!
-//! - Lobby: a colour chip left of each player's portrait.
+//! - Lobby: a colour ball on the top right corner of each player's portrait;
+//!   LB / RB (Q / E) change the colour of the portrait the selection box is on.
 //! - Character select: a bar "◀ ● GREEN ▶" at the foot of the character's
 //!   picture, above the page number. Tap or click its arrows; or move the
 //!   D-pad focus onto it, then left / right change the colour (A: the next).
@@ -13,9 +14,10 @@
 //! the portrait's picture on the sheet, 42 points per character), character
 //! select has `ImgChara` (158 points per character) and `BtnPrev` / `BtnNext`.
 
-use crate::gfx::{text_width, Ui};
+use crate::gfx::{label_width, Ui};
 use crate::lyt::{self, Btn, Kind};
 use crate::recolor;
+use crate::Host;
 use std::sync::Mutex;
 
 /// The bar, landscape points.
@@ -27,8 +29,43 @@ pub const BAR_NAME: &str = "PortColor";
 const PORTRAIT_W: u32 = 42;
 const PORTRAIT_H: u32 = 28;
 const ART_W: u32 = 158;
-/// The bar's frame, the game's menu green.
+/// The bar's frame, the game's menu green, and its bright edge.
 const TEAL: [f32; 3] = [0.33, 0.78, 0.68];
+const TEAL_HI: [f32; 3] = [0.66, 0.97, 0.88];
+/// Lobby ball radius (points).
+const BALL_R: f32 = 5.5;
+
+/// A colour ball: a dark outline, a teal rim like the game's frames, and the
+/// colour with a soft light from the top left (dark at the foot, a highlight).
+pub fn ball(c: (f32, f32), r: f32, rgb: [f32; 3]) -> Vec<Ui> {
+    let k = |f: f32, a: f32| [rgb[0] * f, rgb[1] * f, rgb[2] * f, a];
+    let lift = |f: f32| [rgb[0] + (1.0 - rgb[0]) * f, rgb[1] + (1.0 - rgb[1]) * f, rgb[2] + (1.0 - rgb[2]) * f, 1.0];
+    let at = |dx: f32, dy: f32| (c.0 + dx * r, c.1 + dy * r);
+    vec![
+        Ui::Circle(c, r + 1.3, [0.02, 0.07, 0.07, 0.9]),
+        Ui::Circle(c, r + 0.5, [TEAL_HI[0], TEAL_HI[1], TEAL_HI[2], 1.0]),
+        Ui::Circle(c, r - 0.4, [TEAL[0] * 0.5, TEAL[1] * 0.5, TEAL[2] * 0.5, 1.0]),
+        Ui::Circle(c, r - 0.9, k(0.45, 1.0)),
+        Ui::Circle(at(-0.08, -0.1), r * 0.78, k(0.8, 1.0)),
+        Ui::Circle(at(-0.15, -0.2), r * 0.55, k(1.0, 1.0)),
+        Ui::Circle(at(-0.25, -0.32), r * 0.3, lift(0.45)),
+        Ui::Circle(at(-0.3, -0.38), r * 0.13, [1.0, 1.0, 1.0, 0.8]),
+    ]
+}
+
+/// The lobby slot (0..3) of a portrait button `BtnChara1P`..`4P`.
+pub fn portrait_slot(name: &str) -> Option<usize> {
+    let n = name.strip_prefix("BtnChara")?.strip_suffix('P')?.parse::<usize>().ok()?;
+    (1..=4).contains(&n).then(|| n - 1)
+}
+
+/// Lobby: the next (+1) or previous (-1) colour for player `slot`'s character.
+pub fn lobby_step(slot: usize, d: i32) {
+    let Some(ch) = STATE.lock().unwrap().chars.get(slot).copied().flatten() else { return };
+    let n = recolor::names().len() as i32;
+    let c = (recolor::colour_of(slot, ch) as i32 + d).rem_euclid(n) as usize;
+    recolor::pick(slot, ch, c);
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Screen {
@@ -43,11 +80,12 @@ struct State {
     edit: Option<usize>,
     /// Character select: the character on the page.
     sel_ch: Option<usize>,
-    /// Lobby: each player's portrait.
+    /// Lobby: each player's portrait, and character.
     portraits: [Option<[f32; 4]>; 4],
+    chars: [Option<usize>; 4],
 }
 
-static STATE: Mutex<State> = Mutex::new(State { screen: Screen::Other, edit: None, sel_ch: None, portraits: [None; 4] });
+static STATE: Mutex<State> = Mutex::new(State { screen: Screen::Other, edit: None, sel_ch: None, portraits: [None; 4], chars: [None; 4] });
 
 /// The lobby's portraits and characters, if this is a lobby. In a Local
 /// Match lobby only your own portrait is a live button; the others' are
@@ -63,10 +101,11 @@ fn lobby(btns: &[Btn]) -> Option<([Option<[f32; 4]>; 4], [Option<usize>; 4])> {
     let mut chars = [None; 4];
     for (i, b) in btns.iter().chain(hidden.iter().filter(|b| portrait(b))).filter_map(|b| Some((b.name.strip_prefix("BtnChara")?.strip_suffix('P')?.parse::<usize>().ok()?, b))) {
         if (1..=4).contains(&i) && rects[i - 1].is_none() {
-            rects[i - 1] = Some(b.rect);
-            // The portrait among the button's pictures (frames, marks...).
-            let pic = b.pics.iter().find(|p| p[2] == PORTRAIT_W && p[3] == PORTRAIT_H && p[0] % PORTRAIT_W == 0);
-            chars[i - 1] = pic.map(|p| (p[0] / PORTRAIT_W) as usize).filter(|&c| c < recolor::characters());
+            // The portrait among the button's pictures (frames, marks...):
+            // the ball goes on its corner (the button is taller).
+            let pic = b.pics.iter().find(|(p, _)| p[2] == PORTRAIT_W && p[3] == PORTRAIT_H && p[0] % PORTRAIT_W == 0);
+            rects[i - 1] = Some(pic.map_or(b.rect, |p| p.1));
+            chars[i - 1] = pic.map(|(p, _)| (p[0] / PORTRAIT_W) as usize).filter(|&c| c < recolor::characters());
         }
     }
     rects.iter().any(Option::is_some).then_some((rects, chars))
@@ -88,7 +127,7 @@ fn contains(r: [f32; 4], p: (f32, f32)) -> bool {
 
 /// Once per pass on the menus (input.rs; `menu` false during a match): works
 /// out the screen and returns what to draw.
-pub fn frame(btns: &[Btn], menu: bool) -> Vec<Ui> {
+pub fn frame(h: &Host, btns: &[Btn], menu: bool) -> Vec<Ui> {
     let mut s = STATE.lock().unwrap();
     let mut ui = Vec::new();
     if !menu {
@@ -103,11 +142,15 @@ pub fn frame(btns: &[Btn], menu: bool) -> Vec<Ui> {
         // Pressable: your own portrait, and COM ones on the host (live buttons).
         s.portraits = [0, 1, 2, 3].map(|i| btns.iter().find(|b| b.name == format!("BtnChara{}P", i + 1) && b.enabled).map(|b| b.rect));
         recolor::set_lobby(chars);
+        s.chars = chars;
         for (slot, (r, ch)) in rects.iter().zip(chars).enumerate() {
             let (Some(r), Some(ch)) = (r, ch) else { continue };
             let c = recolor::swatch(recolor::colour_of(slot, ch));
-            ui.push(Ui::Disc((r[0] - 11.0, r[1] + r[3] / 2.0), 6.5, c, [0.85, 0.85, 0.85]));
+            ui.extend(ball((r[0] + r[2] - 2.0, r[1] + 2.0), BALL_R, c));
         }
+    } else if let Some(balls) = icon_balls(h, s.chars) {
+        s.screen = Screen::Other;
+        ui.extend(balls);
     } else if let Some(ch) = select(btns) {
         s.screen = Screen::Select;
         s.sel_ch = Some(ch);
@@ -116,18 +159,18 @@ pub fn frame(btns: &[Btn], menu: bool) -> Vec<Ui> {
         // The character's picture in that colour.
         // SAFETY: called on the game's thread, whose GL context is current.
         unsafe { crate::textures::show_art(Some((ch, colour))) };
-        let name = recolor::names()[colour].to_uppercase();
+        let name = recolor::names()[colour].clone();
         let [x, y, w, h] = BAR;
         let cy = y + h / 2.0;
         ui.push(Ui::Rect(BAR, [0.0, 0.0, 0.0, 0.65]));
         ui.push(Ui::Frame(BAR, TEAL, 1.0));
         ui.push(Ui::Tri([(x + 5.0, cy), (x + 13.0, cy - 5.5), (x + 13.0, cy + 5.5)], TEAL));
         ui.push(Ui::Tri([(x + w - 5.0, cy), (x + w - 13.0, cy - 5.5), (x + w - 13.0, cy + 5.5)], TEAL));
-        let px = 1.2;
-        let tw = text_width(&name, px);
+        let size = 13.0;
+        let tw = label_width(&name, size);
         let left = x + w / 2.0 - (12.0 + 5.0 + tw) / 2.0;
-        ui.push(Ui::Disc((left + 6.0, cy), 5.0, recolor::swatch(colour), [0.85, 0.85, 0.85]));
-        ui.push(Ui::Text((left + 17.0, cy), name, px, [0.95, 0.95, 0.95]));
+        ui.extend(ball((left + 6.0, cy), 4.5, recolor::swatch(colour)));
+        ui.push(Ui::Label((left + 17.0, cy), name, size, [0.93, 0.93, 0.89, 1.0]));
     } else {
         s.screen = Screen::Other;
         // SAFETY: as above.
@@ -135,6 +178,82 @@ pub fn frame(btns: &[Btn], menu: bool) -> Vec<Ui> {
     }
     ui
 }
+
+/// Character portraits in rows (`ImgIconChara1`..`5`, 40 x 26, the
+/// character by the picture, 40 points each): a ball on each.
+/// - Match results (Total Results, Player Kills...): each row's "P1".."P4"
+///   picture (`ImgP<row>`, 23 x 20, at x 213 + 23 per player on the sheet)
+///   tells whose row it is: that player's colour.
+/// - Pages without P pictures (Player Kills: the names are text): the
+///   lobby's players (`lobby`: each one's character, kept from the lobby) in order (all, or all but you), where the portrait is
+///   that player's character.
+/// - Records (Coin Shoot's stage pages, 1st to 5th; every portrait matches
+///   the records table): the colour noted when the record was set (records.rs).
+fn icon_balls(h: &Host, lobby: [Option<usize>; 4]) -> Option<Vec<Ui>> {
+    let imgs = lyt::images();
+    let row = |name: &str, prefix: &str| name.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=5).contains(n));
+    let mut icons: Vec<(usize, usize, [f32; 4])> = imgs
+        .iter()
+        .filter_map(|i| {
+            let ch = (i.src[2] == ICON_W && i.src[3] == ICON_H).then(|| (i.src[0] / ICON_W) as usize).filter(|&c| c < recolor::characters())?;
+            Some((row(&i.name, "ImgIconChara")?, ch, i.rect))
+        })
+        .collect();
+    // (A layout can be drawn more than once a frame.)
+    icons.sort_by_key(|e| e.0);
+    icons.dedup_by_key(|e| e.0);
+    if icons.is_empty() {
+        return None;
+    }
+    let mut players = [None; 6];
+    for i in &imgs {
+        if let Some(r) = row(&i.name, "ImgP") {
+            if i.src[1] == P_Y && i.src[2] == P_W && i.src[0] >= P_X && (i.src[0] - P_X) % P_W == 0 && (i.src[0] - P_X) / P_W < 4 {
+                players[r] = Some(((i.src[0] - P_X) / P_W) as usize);
+            }
+        }
+    }
+    // P pictures count only with one per row (another page's layout can
+    // leave one drawn).
+    let rows: Vec<usize> = icons.iter().map(|e| e.0).collect();
+    let pictured = rows.iter().all(|&r| players[r].is_some()) && players.iter().filter(|p| p.is_some()).count() == rows.len();
+    let records = crate::records::rows(h);
+    let is_record = |r: usize, ch: usize| records.get(r - 1).copied().flatten().filter(|&(c, _)| c == ch);
+    let record_page = !pictured && !records.is_empty() && icons.iter().all(|&(r, ch, _)| is_record(r, ch).is_some());
+    if !pictured && !record_page {
+        // No P pictures (Player Kills...: the names are text): the rows are
+        // the lobby's players in order, everyone or everyone but you. A row
+        // only counts if its portrait is that player's character.
+        let all: Vec<usize> = (0..4).filter(|&i| lobby[i].is_some()).collect();
+        let others: Vec<usize> = all.iter().copied().filter(|&i| i != recolor::local_player()).collect();
+        let order = if rows.len() == others.len() { others } else if rows.len() == all.len() { all } else { Vec::new() };
+        players = [None; 6];
+        for (&r, &slot) in rows.iter().zip(&order) {
+            players[r] = Some(slot);
+        }
+        for &(r, ch, _) in &icons {
+            if players[r].is_some_and(|slot| lobby[slot] != Some(ch)) {
+                players[r] = None;
+            }
+        }
+    }
+    let mut ui = Vec::new();
+    for (r, ch, rect) in icons {
+        let colour = if record_page { is_record(r, ch).map(|(_, colour)| colour) } else { players[r].map(|slot| recolor::colour_of(slot, ch)) };
+        if let Some(colour) = colour {
+            ui.extend(ball((rect[0] + rect[2] - 2.0, rect[1] + 2.0), BALL_R, recolor::swatch(colour)));
+        }
+    }
+    Some(ui)
+}
+
+/// A portrait in the result and record rows, and the "P1".."P4" pictures
+/// (sheet x of P1, their y and width).
+const ICON_W: u32 = 40;
+const ICON_H: u32 = 26;
+const P_X: u32 = 213;
+const P_Y: u32 = 50;
+const P_W: u32 = 23;
 
 /// The port's own buttons on this screen, for the D-pad focus.
 pub fn buttons() -> Vec<Btn> {

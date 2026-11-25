@@ -9,24 +9,27 @@
 //!   D-pad / arrows move a focus rectangle over its buttons, A / Enter press
 //!   the focused one, Y / RB / X / LB (1-4) press Equip / Give / Combine /
 //!   Discard, B / Esc / Backspace close it.
-//! - menus (everything else, the pause dialog included): D-pad / arrows move
-//!   the focus over the game's own buttons on screen (lyt.rs), the left stick
-//!   moves a pointer; A / Enter press the focused button (or touch at the
-//!   pointer, whichever moved last; on a slide-to-confirm bar A slides it);
-//!   B / Esc / Backspace press the back button (or the dialog's Cancel);
-//!   on the main menu they close the game;
-//!   other buttons touch fixed menu points.
+//! - menus (everything else, the pause dialog included): the selection box
+//!   is always on one of the game's own buttons on screen (lyt.rs), the top
+//!   one when a screen opens; D-pad / arrows move it. The pointer is always
+//!   shown: the mouse or either stick moves it, and over a button it takes
+//!   the selection box there. A / Enter press the selected button (on a
+//!   slide-to-confirm bar A slides it); B / Esc / Backspace press the back
+//!   button (or the dialog's Cancel); on the main menu they close the game;
+//!   Select (View) / F1 press the help button ("?"); other buttons touch
+//!   fixed menu points.
 //!
 //! The back button is not drawn (Backtrack, lyt.rs) and the mouse can't press
 //! it: only B does. The mouse stays finger 0 everywhere. Switching layout
 //! lifts every finger.
 //!
-//! Overlay: while a controller is connected, badges show which pad button
-//! touches where; holding View (Back) for 0.8 s hides or shows them.
+//! Overlay: while the controller is the control scheme in use (notice.rs),
+//! badges show which pad button touches where.
 
 use crate::colorui;
-use crate::gfx::Badge;
+use crate::gfx::{Badge, Ui};
 use crate::lyt::{self, Btn, Kind};
+use crate::notice::{self, Scheme};
 use crate::touch;
 use crate::window::Input;
 use crate::{Cpu, Host};
@@ -39,6 +42,8 @@ use std::sync::Mutex;
 const STICK: usize = 2;
 /// Fingers of the buttons: FIRST + index in the layout's table.
 const FIRST: usize = 3;
+/// Finger of the help button (Select / F1), after the menu table's.
+const HELP: usize = FIRST + 2 + 6;
 
 /// Virtual stick: centre and radius (touchHLE `--stick-to-touch=23,197,100,100`).
 const STICK_CENTRE: (f32, f32) = (73.0, 247.0);
@@ -54,21 +59,19 @@ struct Bind {
     /// Pressed while this trigger is past half way.
     trigger: Option<Axis>,
     keys: &'static [K],
-    /// Also needs Shift (Shift + Enter for Start in menus).
-    shift: bool,
     /// Also pressed by the right mouse button.
     right_mouse: bool,
     at: (f32, f32),
 }
 
 const fn b(pad: &'static [Button], keys: &'static [K], x: f32, y: f32) -> Bind {
-    Bind { pad, trigger: None, keys, shift: false, right_mouse: false, at: (x, y) }
+    Bind { pad, trigger: None, keys, right_mouse: false, at: (x, y) }
 }
 
 /// Gameplay HUD (the user's touchHLE `--button-to-touch` points).
 const GAMEPLAY: &[Bind] = &[
     // LT: aim the gun / fire.
-    Bind { pad: &[], trigger: Some(Axis::TriggerLeft), keys: &[K::Space], shift: false, right_mouse: true, at: (440.0, 210.0) },
+    Bind { pad: &[], trigger: Some(Axis::TriggerLeft), keys: &[K::Space], right_mouse: true, at: (440.0, 210.0) },
     b(&[Button::LeftShoulder], &[K::F], 405.0, 280.0), // knife
     b(&[Button::A], &[K::Q], 371.0, 210.0),
     b(&[Button::B], &[K::R], 441.0, 140.0),
@@ -82,12 +85,12 @@ const GAMEPLAY_LABELS: [&str; 7] = ["LT", "LB", "A", "B", "X", "Y", "ST"];
 /// Menus (the user's touchHLE `--menu-button-to-touch` points). A and B are
 /// handled apart (the focused button, the back button).
 const MENU: &[Bind] = &[
-    Bind { pad: &[Button::Start], trigger: None, keys: &[K::Return, K::KpEnter], shift: true, right_mouse: false, at: (240.0, 300.0) },
+    Bind { pad: &[Button::Start], trigger: None, keys: &[], right_mouse: false, at: (240.0, 300.0) },
     b(&[Button::Y], &[K::Num1], 39.0, 141.0),
     b(&[Button::LeftShoulder], &[K::Num2], 39.0, 211.0),
-    Bind { pad: &[], trigger: Some(Axis::TriggerLeft), keys: &[K::Num3], shift: false, right_mouse: false, at: (441.0, 141.0) },
+    Bind { pad: &[], trigger: Some(Axis::TriggerLeft), keys: &[K::Num3], right_mouse: false, at: (441.0, 141.0) },
     b(&[Button::RightShoulder], &[K::Num4], 441.0, 211.0),
-    Bind { pad: &[], trigger: Some(Axis::TriggerRight), keys: &[K::Num5], shift: false, right_mouse: false, at: (441.0, 281.0) },
+    Bind { pad: &[], trigger: Some(Axis::TriggerRight), keys: &[K::Num5], right_mouse: false, at: (441.0, 281.0) },
 ];
 
 /// Menu swipe on X (touchHLE `--menu-button-to-swipe=X,147,228,353,228`).
@@ -105,8 +108,6 @@ const INVENTORY_ROOT: &str = "Sub_lytAC";
 /// D-pad focus: first repeat after this long held, then every NAV_REPEAT s.
 const NAV_DELAY: f64 = 0.4;
 const NAV_REPEAT: f64 = 0.15;
-/// Hold View this long to hide / show the overlay.
-const OVERLAY_TOGGLE_HOLD: f64 = 0.8;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Screen {
@@ -119,20 +120,25 @@ enum Screen {
 struct State {
     keys: HashSet<K>,
     pad: HashSet<Button>,
-    /// Left stick, -1..1 (y down), and triggers 0..1.
+    /// Left and right sticks, -1..1 (y down), and triggers 0..1.
     stick: (f32, f32),
+    rstick: (f32, f32),
     lt: f32,
     rt: f32,
     right_mouse: bool,
     /// The layout in use.
     screen: Option<Screen>,
-    /// Menu pointer (landscape points) and whether it is shown.
+    /// Menu pointer (landscape points), and whether it moved this pass.
     pointer: (f32, f32),
-    pointer_shown: bool,
-    /// Focused button (its centre) and whether the focus rectangle is shown
-    /// (the D-pad was used after the pointer).
+    pointer_moved: bool,
+    /// The selected button (its centre).
     focus: Option<(f32, f32)>,
-    focus_shown: bool,
+    /// The selectable buttons' names last pass: a new set is a new screen.
+    screen_sig: String,
+    /// Whether the system cursor is shown (in gameplay; menus draw their own).
+    cursor: Option<bool>,
+    /// Select / F1 down last pass (help).
+    help_held: bool,
     /// D-pad direction last pass and when it repeats.
     nav: (i32, i32),
     nav_next: f64,
@@ -145,13 +151,12 @@ struct State {
     b_at: Option<(f32, f32)>,
     /// The mouse press started on the hidden back button: ignored to the end.
     mouse_blocked: bool,
-    overlay_hidden: bool,
-    /// When View went down, and whether this hold already toggled.
-    view_since: Option<f64>,
-    view_done: bool,
     last: f64,
     /// X was down on the last pass (a swipe starts on the press).
     swipe_held: bool,
+    /// LB / Q and RB / E down last pass (lobby colours).
+    lb_held: bool,
+    rb_held: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -181,16 +186,19 @@ pub fn parse_keys(args: &[String]) {
 }
 
 fn bind_down(s: &State, bd: &Bind) -> bool {
-    let shift = s.keys.contains(&K::LShift) || s.keys.contains(&K::RShift);
     bd.pad.iter().any(|p| s.pad.contains(p))
         || bd.trigger.is_some_and(|t| if t == Axis::TriggerLeft { s.lt } else { s.rt } > 0.5)
         || (bd.right_mouse && s.right_mouse)
-        || (bd.keys.iter().any(|k| s.keys.contains(k)) && shift == bd.shift)
+        || bd.keys.iter().any(|k| s.keys.contains(k))
 }
 
 /// The left stick past the dead zone, else (0, 0).
 fn stick(s: &State) -> (f32, f32) {
-    let (sx, sy) = s.stick;
+    dead_zone(s.stick)
+}
+
+/// A stick position past the dead zone, else (0, 0).
+fn dead_zone((sx, sy): (f32, f32)) -> (f32, f32) {
     let l = (sx * sx + sy * sy).sqrt();
     if l < DEAD_ZONE {
         (0.0, 0.0)
@@ -233,7 +241,7 @@ const PAUSED: u32 = 0x392288 + 0x1da;
 /// Seen with REVS_WATCH: on from the match start (frame ~1511), off in the
 /// pause dialog and from MISSION OVER on; the inventory keeps it on. Quitting
 /// from the pause dialog leaves INPUT_ON set, so the match screen's
-/// scoreboard (the "Sub_lytScore1" layout, top left) must be on screen too.
+/// scoreboard (the "Sub_lytScore1" layout; a little lower since UI stage 3) must be on screen too.
 fn in_match(h: &Host) -> bool {
     h.rd8(INPUT_ON) != 0 && h.rd8(PAUSED) == 0 && lyt::roots().iter().any(|r| r.starts_with("Sub_lytScore"))
 }
@@ -262,6 +270,21 @@ fn focusable(btns: &[Btn], screen: Screen) -> Vec<&Btn> {
         .filter(|b| b.enabled && b.name != "BtnBack" && b.rect[2] > 0.0 && b.rect[3] > 0.0)
         .filter(|b| screen != Screen::Inventory || b.root == INVENTORY_ROOT)
         .collect()
+}
+
+/// The top button (then the leftmost): where the selection box starts. Not
+/// the help button (top left since UI stage 3) unless it is the only one.
+fn top<'a>(list: &[&'a Btn]) -> Option<&'a Btn> {
+    let options: Vec<&Btn> = list.iter().copied().filter(|b| b.name != "BtnHelp").collect();
+    let list = if options.is_empty() { list } else { &options[..] };
+    list.iter().copied().min_by(|a, b| (a.rect[1], a.rect[0]).partial_cmp(&(b.rect[1], b.rect[0])).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+/// The selectable buttons' names, in order: changes when a screen opens.
+fn signature(list: &[&Btn]) -> String {
+    let mut names: Vec<&str> = list.iter().map(|b| b.name.as_str()).collect();
+    names.sort_unstable();
+    names.join(",")
 }
 
 fn nearest<'a>(list: &[&'a Btn], p: (f32, f32)) -> Option<&'a Btn> {
@@ -354,11 +377,38 @@ fn hold(h: &mut Host, c: &mut Cpu, id: usize, down: bool, at: (f32, f32)) {
 pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
     let mut guard = STATE.lock().unwrap();
     let s = guard.get_or_insert_with(|| State { pointer: (240.0, 160.0), ..State::default() });
+    let now = h.ui.now();
+    s.pointer_moved = false;
     for e in events {
+        match &e {
+            Input::Mouse(..) | Input::Hover(..) | Input::RightMouse(_) | Input::Key(..) => notice::used(Scheme::Keyboard, now),
+            Input::Pad(..) => notice::used(Scheme::Controller, now),
+            Input::Axis(a, v) => {
+                let trigger = matches!(a, Axis::TriggerLeft | Axis::TriggerRight);
+                if (*v as f32 / 32767.0).abs() > if trigger { 0.5 } else { DEAD_ZONE } {
+                    notice::used(Scheme::Controller, now);
+                }
+            }
+            Input::PadPlugged(_) => {}
+        }
         match e {
+            Input::Hover(x, y) => {
+                if let Some(at) = touch::window_to_landscape(h, x, y) {
+                    s.pointer = at;
+                    s.pointer_moved = true;
+                }
+            }
+            Input::PadPlugged(on) => {
+                if !on {
+                    let left = h.gfx.as_ref().map_or(0, |g| g.window.pad_count());
+                    notice::disconnected(left, now);
+                }
+            }
             Input::Mouse(p, x, y) => {
-                s.pointer_shown = false;
-                s.focus_shown = false;
+                if let Some(at) = touch::window_to_landscape(h, x, y) {
+                    s.pointer = at;
+                    s.pointer_moved = true;
+                }
                 // Backtrack: a press on the hidden back button is ignored.
                 if p == 0 {
                     let at = touch::window_to_landscape(h, x, y).unwrap_or((-1.0, -1.0));
@@ -389,9 +439,10 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
                 match a {
                     Axis::LeftX => s.stick.0 = f,
                     Axis::LeftY => s.stick.1 = f,
+                    Axis::RightX => s.rstick.0 = f,
+                    Axis::RightY => s.rstick.1 = f,
                     Axis::TriggerLeft => s.lt = f,
                     Axis::TriggerRight => s.rt = f,
-                    _ => {}
                 }
             }
         }
@@ -411,6 +462,7 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
                 break;
             }
             ks.remove(0);
+            notice::used(Scheme::Keyboard, h.ui.now());
             if down {
                 s.keys.insert(k);
             } else {
@@ -418,7 +470,6 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
             }
         }
     }
-    let now = h.ui.now();
     let dt = if s.last == 0.0 { 0.0 } else { (now - s.last).clamp(0.0, 0.1) as f32 };
     s.last = now;
 
@@ -431,7 +482,7 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         Screen::Gameplay
     };
     // The port's colour menus (lobby chips, the character select bar).
-    let port_ui = colorui::frame(&btns, screen == Screen::Menu);
+    let port_ui = colorui::frame(h, &btns, screen == Screen::Menu);
     btns.extend(colorui::buttons());
     if s.screen != Some(screen) {
         if s.screen.is_some() {
@@ -447,9 +498,9 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
     }
     let mut badges = Vec::new();
     let mut focus_rect = None;
+    // The actions bar (menus only).
+    let mut acts = Vec::new();
     if screen == Screen::Gameplay {
-        s.pointer_shown = false;
-        s.focus_shown = false;
         let (dx, dy) = direction(s, [K::W, K::A, K::S, K::D]);
         if dx == 0.0 && dy == 0.0 {
             hold(h, c, STICK, false, STICK_CENTRE);
@@ -467,42 +518,60 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         }
         badges.push(badge((STICK_CENTRE.0 - 30.0, STICK_CENTRE.1 - 30.0), "LS"));
     } else {
-        // The pointer: the left stick.
-        let (dx, dy) = stick(s);
+        // The pointer: the mouse (above) or either stick.
+        let (lx, ly) = stick(s);
+        let (rx, ry) = dead_zone(s.rstick);
+        let (dx, dy) = ((lx + rx).clamp(-1.0, 1.0), (ly + ry).clamp(-1.0, 1.0));
         if dx != 0.0 || dy != 0.0 {
-            s.pointer_shown = true;
-            s.focus_shown = false;
             s.pointer.0 = (s.pointer.0 + dx * POINTER_SPEED * dt).clamp(0.0, 479.0);
             s.pointer.1 = (s.pointer.1 + dy * POINTER_SPEED * dt).clamp(0.0, 319.0);
+            s.pointer_moved = true;
         }
-        // The focus: the D-pad / arrows, over the game's own buttons.
+        // The selection box: on the top button when a screen opens; the
+        // D-pad / arrows move it, and the pointer takes it to a button it
+        // moves over.
         let list = focusable(&btns, screen);
-        let mut cur = s.focus.and_then(|f| resolve(&list, f));
+        let sig = signature(&list);
+        let mut cur = if sig != s.screen_sig { top(&list) } else { s.focus.and_then(|f| resolve(&list, f)) };
+        s.screen_sig = sig;
+        if s.pointer_moved {
+            if let Some(b) = list.iter().copied().find(|b| b.contains(s.pointer)) {
+                cur = Some(b);
+            }
+        }
         let nav = dpad(s);
         if nav != (0, 0) && (nav != s.nav || now >= s.nav_next) {
             s.nav_next = now + if nav != s.nav { NAV_DELAY } else { NAV_REPEAT };
-            if !s.focus_shown || cur.is_none() {
-                // The first press shows the focus nearest the pointer.
-                cur = nearest(&list, s.pointer);
-            } else if cur.is_some_and(|b| b.name == colorui::BAR_NAME) && nav.0 != 0 && nav.1 == 0 {
+            if cur.is_some_and(|b| b.name == colorui::BAR_NAME) && nav.0 != 0 && nav.1 == 0 {
                 // On the colour bar left / right change the colour.
                 colorui::step(nav.0);
             } else if let Some(from) = cur {
                 let l = ((nav.0 * nav.0 + nav.1 * nav.1) as f32).sqrt();
                 cur = step(&list, from, nav.0 as f32 / l, nav.1 as f32 / l).or(cur);
+            } else {
+                cur = top(&list);
             }
-            s.focus_shown = cur.is_some();
-            s.pointer_shown = false;
         }
         s.nav = nav;
-        if let Some(b) = cur {
-            s.focus = Some(b.centre());
+        s.focus = cur.map(|b| b.centre());
+        let focused = cur.cloned();
+        // LB / RB (Q / E) on a lobby portrait: that player's colour, one per press.
+        let portrait = focused.as_ref().and_then(|b| colorui::portrait_slot(&b.name));
+        let lb = s.pad.contains(&Button::LeftShoulder) || s.keys.contains(&K::Q);
+        let rb = s.pad.contains(&Button::RightShoulder) || s.keys.contains(&K::E);
+        if let Some(slot) = portrait {
+            if lb && !s.lb_held {
+                colorui::lobby_step(slot, -1);
+            }
+            if rb && !s.rb_held {
+                colorui::lobby_step(slot, 1);
+            }
         }
-        let focused = cur.filter(|_| s.focus_shown).cloned();
+        s.lb_held = lb;
+        s.rb_held = rb;
 
         // A / Enter: the focused button, else at the pointer.
-        let shift = s.keys.contains(&K::LShift) || s.keys.contains(&K::RShift);
-        let a = s.pad.contains(&Button::A) || ((s.keys.contains(&K::Return) || s.keys.contains(&K::KpEnter)) && !shift);
+        let a = s.pad.contains(&Button::A) || s.keys.contains(&K::Return) || s.keys.contains(&K::KpEnter);
         if a && !s.a_held {
             s.a_follow = false;
             s.a_at = None;
@@ -514,7 +583,6 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
                 }
                 Some(b) => s.a_at = Some(b.centre()),
                 None => {
-                    s.pointer_shown = true;
                     // Backtrack: the pointer can't press the hidden back button.
                     if !back_button(&btns).is_some_and(|b| b.contains(s.pointer)) {
                         s.a_at = Some(s.pointer);
@@ -548,8 +616,36 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         }
         s.b_held = bk;
         hold(h, c, FIRST + 1, s.b_at.is_some(), s.b_at.unwrap_or((0.0, 0.0)));
-        if let Some(b) = b_target(&btns) {
-            badges.push(if b.name == "BtnBack" { badge(b.centre(), "B") } else { badge_left(b, "B") });
+        // (The hidden back button gets no badge: the actions bar shows B.)
+        if let Some(b) = b_target(&btns).filter(|b| b.name != "BtnBack") {
+            badges.push(badge_left(b, "B"));
+        }
+
+        // Select (View) / F1: the help button, while held.
+        let help = s.pad.contains(&Button::Back) || s.keys.contains(&K::F1);
+        let help_at = btns.iter().find(|b| b.name == "BtnHelp" && b.enabled).map(|b| b.centre());
+        hold(h, c, HELP, help && help_at.is_some(), help_at.unwrap_or((0.0, 0.0)));
+        s.help_held = help;
+
+        if screen == Screen::Menu {
+            use crate::actions::Act;
+            if !list.is_empty() {
+                acts.push(Act::Select);
+            }
+            if main_menu(&btns) {
+                acts.push(Act::Quit);
+            } else if b_target(&btns).is_some() {
+                acts.push(Act::Back);
+            }
+            if help_at.is_some() {
+                acts.push(Act::Help);
+            }
+            if btns.iter().any(|b| b.name == "BtnOK" && b.enabled) {
+                acts.push(Act::Ok);
+            }
+            if portrait.is_some() {
+                acts.push(Act::Colour);
+            }
         }
 
         if screen == Screen::Inventory {
@@ -563,9 +659,14 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
                 }
             }
         } else {
+            // Start presses OK where it is (the actions bar may have moved it up).
+            let ok = btns.iter().find(|b| b.name == "BtnOK" && b.enabled).map(|b| b.centre());
+            let bumper = |bd: &Bind| bd.pad.iter().any(|p| matches!(p, Button::LeftShoulder | Button::RightShoulder));
             for (i, bd) in MENU.iter().enumerate() {
-                let down = bind_down(s, bd);
-                hold(h, c, FIRST + 2 + i, down, bd.at);
+                // On a lobby portrait LB / RB are the colour, not their touch points.
+                let down = bind_down(s, bd) && !(portrait.is_some() && bumper(bd));
+                let at = if i == 0 { ok.unwrap_or(bd.at) } else { bd.at };
+                hold(h, c, FIRST + 2 + i, down, at);
             }
             // X: one swipe per press.
             let x = s.pad.contains(&Button::X) || s.keys.contains(&K::X);
@@ -575,30 +676,32 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
             s.swipe_held = x;
         }
         if let Some(b) = &focused {
-            s.pointer_shown = false;
             focus_rect = Some(b.rect);
         }
     }
 
-    // The overlay: shown while a controller is connected; hold View to toggle.
-    let view = s.pad.contains(&Button::Back);
-    match (view, s.view_since) {
-        (true, None) => {
-            s.view_since = Some(now);
-            s.view_done = false;
-        }
-        (true, Some(t)) if !s.view_done && now - t >= OVERLAY_TOGGLE_HOLD => {
-            s.overlay_hidden = !s.overlay_hidden;
-            s.view_done = true;
-            println!("controller overlay {}", if s.overlay_hidden { "hidden" } else { "shown" });
-        }
-        (false, _) => s.view_since = None,
-        _ => {}
-    }
     let pads = h.gfx.as_ref().map_or(0, |g| g.window.pad_count());
-    // REVS_OVERLAY=1 shows it without a controller (for test screenshots).
-    let show_badges = (pads > 0 || std::env::var_os("REVS_OVERLAY").is_some()) && !s.overlay_hidden;
-    let shown = s.pointer_shown.then_some(s.pointer);
+    // The overlay: while the controller is in use. REVS_OVERLAY=1 shows it
+    // anyway (for test screenshots).
+    let show_badges = notice::scheme(pads) == Scheme::Controller || std::env::var_os("REVS_OVERLAY").is_some();
+    let menu = screen != Screen::Gameplay;
+    let shown = menu.then_some(s.pointer);
+    let mut port_ui = port_ui;
+    // Online Match is greyed (lyt.rs makes it unpressable): dimmed here.
+    if let Some(b) = btns.iter().find(|b| b.name == "BtnOnline") {
+        let r = b.rect;
+        port_ui.insert(0, Ui::Rect([r[0], r[1] + 6.0, r[2], r[3] - 12.0], [0.04, 0.05, 0.06, 0.62]));
+    }
+    port_ui.extend(notice::frame(now, pads));
+    let scheme = notice::scheme(pads);
+    port_ui.extend(crate::actions::frame(scheme, &acts));
+    lyt::keep_clear(crate::actions::rect(scheme, &acts));
+    if s.cursor != Some(!menu) {
+        s.cursor = Some(!menu);
+        if let Some(g) = h.gfx.as_ref() {
+            g.window.show_cursor(!menu);
+        }
+    }
     if let Some(g) = h.gfx.as_mut() {
         g.pointer = shown;
         g.focus = focus_rect;

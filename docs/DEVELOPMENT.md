@@ -335,12 +335,13 @@ The layout follows the game's state: gameplay while `GM_CtrlLayout`+0x8c (input 
 
 | Menus (pause dialog too) | Controller | Keyboard | Touch |
 |---|---|---|---|
-| focus rectangle, jumps between the game's buttons | D-pad | arrows | - |
-| pointer (drawn as a ring) | left stick | - (mouse) | - |
-| press the focused button / touch at the pointer | A | Enter | its centre / pointer |
+| selection box, jumps between the game's buttons | D-pad | arrows | - |
+| pointer (a triangle; over a button it takes the selection box there) | left or right stick | - (mouse) | - |
+| press the selected button (no button on screen: touch at the pointer) | A | Enter | its centre / pointer |
+| help ("?", `BtnHelp`), while held | Select (View) | F1 | its centre |
 | slide-to-confirm bar (focused) | A | Enter | swipe across the bar |
 | back (hidden back button, else a dialog's Cancel) | B | Esc, Backspace | BtnBack / BtnNo centre |
-| OK / Cancel (bottom centre) | Start | Shift + Enter | 240,300 |
+| OK / Cancel (bottom centre) | Start | (Enter on it) | `BtnOK` centre, else 240,300 |
 | side buttons | Y / LB / LT / RB / RT | 1 / 2 / 3 / 4 / 5 | 39,141 / 39,211 / 441,141 / 441,211 / 441,281 |
 | swipe | X | X | 147,228 -> 353,228 |
 
@@ -377,15 +378,90 @@ class = vtable slot 12 `doMsgProc`: Button 0x42b4c, PushButton 0x59f64, ActionBu
   - Spanish: "Monojugador" reads "Un jugador" (menu button, help, How to Play), fixed in the loaded text the
     first time each string is read (same length; `cargo test -p revs-run tweaks`).
 - Focus: D-pad / arrows step to the nearest enabled button ahead (distance ahead + 2 x sideways), repeat after
-  0.4 s then every 0.15 s; the first press shows it on the button nearest the pointer. Moving the stick or the
-  mouse hides it.
+  0.4 s then every 0.15 s. (2026-11-24: see "Menu pointer and selection box" below.)
 - Overlay: coloured badges (A green, B red, X blue, Y yellow, others grey) at each mapped point: HUD buttons in
-  gameplay, Equip/Give/Combine/Discard and the back button in the inventory, the back button or Cancel in menus.
-  Shown while a controller is connected (`REVS_OVERLAY=1` forces it for screenshots); holding View 0.8 s
-  toggles it.
+  gameplay, Equip/Give/Combine/Discard and the back button in the inventory, Cancel in menus (the hidden back
+  button's B is on the actions bar since UI stage 2).
+  Shown while the controller is the scheme in use (`REVS_OVERLAY=1` forces it for screenshots). (Until
+  2026-11-24 holding View toggled it; View is now help.)
 Checked with scripted keys (`--key`, REVS_OVERLAY=1): main menu focus and hidden back button, inventory open /
 focus / select / close, pause dialog Cancel, slide-to-quit, back from Single Player to the main menu. Not
 checked by script: real mouse presses on the hidden back button, controller buttons (same code paths as keys).
+
+Menu pointer and selection box, header (UI stage 1, 2026-11-24; `input.rs`, `notice.rs`, `gfx.rs`, `window.rs`):
+- Selection box: always on a button in menus (inventory too). When the set of selectable buttons changes (a new
+  screen or dialog) it starts on the top one (then the leftmost). Drawn in the game's teal: a dark line, a soft
+  glow, a bright edge and corner brackets (`draw_selection`).
+- Pointer: always shown in menus, a triangle pointing up and left (18 points) in the menu teal, bright at the
+  tip, with a bright inner edge and a dark outline (`draw_pointer`); the system
+  cursor is hidden there and shown in gameplay. The mouse moves it (SDL motion events with no button held arrive
+  as `Input::Hover`), and so do both sticks. When it moves over a selectable button the selection box goes there;
+  A / Enter always press the selected button, so there is one target.
+- Help: Select (View) or F1 holds a finger on `BtnHelp` while down. The View hold that toggled the overlay is gone.
+- Control scheme (`notice.rs`): keyboard / mouse or controller, whichever sent the last input (sticks past the
+  dead zone, triggers past half way); scripted keys count as the keyboard. A switch shows "Control scheme
+  changed." top left and the scheme's icon top right, each on a see-through dark plate (50 %) with a teal
+  underline: 0.3 s fade in, shown to 2.5 s, 0.5 s fade out. At start only the icon shows (whichever scheme),
+  fading in from the first frame, until 2.5 s after the first input. An icon flashes (opacity 25-100 %, 2.5
+  times a second) for its first 2 s, again with each message. The icons follow the usual pictograms, in teal
+  shades only: one shape (a gradient from the bright edge teal to a deeper one) with the details cut out in dark
+  teal. Controller: the outline and the bumper band are polygons traced from a 980-unit reference (`PAD_BODY`,
+  `PAD_BAND` in `notice.rs`; `gfx.rs` `Ui::Poly`, filled by ear clipping in `triangulate`), with the guide
+  button, two crosses, two dots, four face buttons and a ring cut out. Keyboard: a rounded body with 3 rows of 9
+  keys, then 2 keys, a space bar and 2 keys. A controller unplugged (`Input::PadPlugged(false)`)
+  shows "Control disconnected"; with none left the scheme goes back to the keyboard. The text is in the game's
+  font (UI stage 2, below).
+- Test runs: the pointer now follows any real mouse motion over the window, so keep the mouse away from a
+  window being scripted.
+
+Game font and actions bar (UI stage 2, 2026-11-24; `font.rs`, `actions.rs`, `textures.rs`, `gfx.rs`, `lyt.rs`):
+- The game's menu font is an `rcx::font::ImageFont`: 0x14 char height, 0x30 / 0x34 cell width / height,
+  0x38 / 0x3c image width / height, 0x444 / 0x448 the glyph table (8 bytes, sorted by code: u16 code, u8 x
+  offset in the cell, u8 width, u16 column, u16 row). The menu font: cell 26 x 25, image 512 x 250 (a 512 x 256
+  GL texture), 176 glyphs. A glyph is the sheet area (column x 26 + x offset, row x 25, width, 25).
+- `ImageFont::FindGlyph` (0x2acbc, r0 = the font) is hooked: the first lookup in a 512-wide font reads the
+  table from memory (`REVS_FONTDUMP=1` prints it). `textures.rs` notes the GL name of the sheet's upload
+  (hash 367663e40dd6ed64, "menu font"; forgotten when deleted or overwritten). `Ui::Label` draws text with
+  that texture (any replacement in `textures/load` too, since UVs are relative), with a soft dark shadow; until
+  both are known it falls back to the 5 x 7 font. Nothing of the font is stored.
+- Actions bar (`actions.rs`): bottom left in menus (not in a match or the inventory), on the header's plate.
+  Select (A / Enter) when something is selectable, Back (B / Esc) when there is a back button or Cancel, Quit
+  instead on the main menu, Help (View / F1) when there is a "?" button, OK (Menu; controller only) when there is
+  `BtnOK`. Controller prompts are teal rings (letters, the View and Menu symbols), keyboard prompts teal
+  keycaps; it switches with the control scheme.
+- Buttons under the bar move up just above it (`lyt.rs` `clear_bar`, before every layout draw: the picture,
+  the screen rectangle and both touch areas; lower-half buttons only). OK goes from y 277 to 252 on the
+  screens that have it. Start presses `BtnOK` where it is (it used to tap the fixed point 240, 300). Shift+Enter is gone
+  (2026-11-24, the user: redundant): on the keyboard, Enter presses OK when it is selected.
+  The hidden back button no longer gets a B badge: the bar shows it.
+
+Layout moves (UI stage 3, 2026-11-24; `lyt.rs` `edit_screens`, before every layout draw):
+- Help (`BtnHelp`, 64 x 64, was at 7,109): top at y 40, just under the screens' black title bar, with its touch
+  areas. The selection box's starting button (`input.rs` `top`) skips it unless it is the only button.
+- Online Match (`BtnOnline`, main menu): disabled (+0x50 = 0) and both touch areas off screen, so no click, key
+  or pad press reaches it and the selection box skips it (it starts on Local Match). The main menu has no
+  greyed picture of it (Create Session greys "Team" by showing a `NotSel2` part instead), so the port draws a
+  62 % dark plate over the bar and its text.
+- Match scoreboard (`Sub_lytScore1`-`4`, one layout per player, 20 points apart, rows 4-23 inside each): moved
+  down 17 points (first layout at y 17, P1's row from y 21), just under the header's message plate (y 4-19).
+  (Moved to the bottom left first; the user wanted it at the top left, only out of the message's way.)
+  The port tells a match by the layout's name (`in_match`), not its place, so nothing else changes.
+
+Title and main menu logo (UI stage 5, 2026-11-25; `textures.rs`, `lyt.rs`):
+- Title screen "Tap" (`ImgTouch`, 170 x 51 at 155,245, on sheet `c22e2e728f17f5a5` at 340,375) reads "Press any
+  key", in its style: a mint serif (Palatino Linotype), wide letter spacing, a soft teal glow
+  (`tools/revs-run/assets/title_press.png`, 4x, made by `tools/make-title-press.ps1`; text only). The "Tap" sheet
+  has no room, so the picture goes into an empty area of the title sheet (`1f7cd367695d3dc5`, at 2,398, under
+  the copyright line; box-filtered to the sheet's scale), and `title_press` points the part at it: the sheet
+  reference at +0x90 copied from the copyright part (each part's own; the logo, "Tap" and the copyright line
+  differ), the image area (+0x98..+0xa4) and the size, centred on where "Tap" was. The game still fades it in
+  and out (the part's alpha, +0x4c, counts 0..255).
+- Main menu logo (`ImgEyecatch`, sheet `d5188017d419205b` at 0,0,180,35) is a small copy of the title logo
+  (`ImgTitle`, sheet `bb3d6a2652dffc9d` at 0,0,404,85), blurry when enlarged. When both sheets are uploaded
+  (either order; the logo sheet comes first) the port redraws the menu logo from the title's: visible box
+  (5,1,168,33) from visible box (0,3,403,79), each texel the alpha-weighted area average of the title texels it
+  covers, at each sheet's own scale (4x with replacement files), then `TexSubImage2D` into the logo sheet
+  (mipmaps follow). The title logo's corner is kept in memory only.
 
 Local Match (Phase 4 milestone 4, 2026-11-20; `tools/revs-run/src/gamekit.rs`): the port has its own `GKSession`
 (adapted from the touchHLE fork's `gk_session.rs`, MPL-2.0) with the same wire protocol, so port windows can play
@@ -530,9 +606,25 @@ character the outfit hash, the starting colour (shown as the original texture) a
   colours for tests.
 - Menus (`colorui.rs`): the lobby is told by its portrait buttons `BtnChara1P`..`4P`, each character by its
   portrait's area on the sheet (42 x 28, x / 42 = character; the button's other pictures are skipped); character
-  select by `ImgChara` (x / 158 = character) with `BtnPrev` / `BtnNext`. The port draws the lobby dots and the
-  colour bar itself (`gfx.rs` `Ui`: rectangles, frames, discs, triangles and a small 5 x 7 capital font), after the
-  game's picture. A press on the bar is claimed in `touch.rs` (`finger_at` and `mouse`, where every input ends): the
+  select by `ImgChara` (x / 158 = character) with `BtnPrev` / `BtnNext`. The port draws the lobby balls and the
+  colour bar itself (`gfx.rs` `Ui`), after the game's picture.
+- Colour balls (UI stage 4, 2026-11-24; `colorui.rs` `ball`): a dark outline, a teal rim (the game's frame teal), then
+  the colour in layers lit from the top left (45 % at the foot, full, a lifted highlight and a white glint). On the
+  top right corner of each portrait picture (the picture's own rectangle from `lyt.rs`: buttons are taller), 5.5
+  points. LB / RB (Q / E) with the selection box on a lobby portrait step that player's colour (`lobby_step`,
+  through `recolor::pick`); their menu touch points are not pressed then. The actions bar shows "LB RB Color" there.
+- Result pages and records: rows of `ImgIconChara1`..`5` (40 x 26; sheet x / 40 = character). Match results have
+  `ImgP<row>` pictures ("P1".."P4" at sheet x 213 + 23 per player, y 50, 23 x 20): the row's player, so the ball
+  is `recolor::colour_of(player, character)` (used only with one P picture per row: another page's layout can leave
+  one drawn). Player Kills has no P pictures (its names are text): its rows are the lobby's players in order,
+  everyone but you (or everyone, by the row count), and a row whose portrait is not that player's character gets
+  no ball. Checked in a Training match: Total Results and Player Kills. Coin Shoot's stage pages (records, no P pictures): `records.rs`
+  hooks `BioVS_UserData::SetSingleModeRanking` (0x9da44: this, stage 0..2, score, character) to note the colour
+  worn when a record is saved (`<home>/port_records.txt`: "stage score character colour"), and
+  `GetSingleModeRanking_Score` (0x9db64) for the stage the page reads. The table: per stage 10 words at
+  `this + 0xba0 + stage * 40`, 5 scores then 5 characters (low byte, signed, -1 none). A row's ball is the latest
+  note with that stage, score and character, else the character's own colour; a row whose portrait is another
+  character is skipped. Noting a new record is not tested by script (it needs a top-5 Coin Shoot score). A press on the bar is claimed in `touch.rs` (`finger_at` and `mouse`, where every input ends): the
   game never sees it, nor that finger's moves and release, and a claimed finger counts as down so a held A presses
   once. Pressing a lobby portrait (not claimed) makes character select edit that player. The bar joins the D-pad
   focus list as `PortColor`; left / right on it change the colour.

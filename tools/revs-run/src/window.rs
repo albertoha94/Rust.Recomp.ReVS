@@ -27,6 +27,10 @@ pub enum Input {
     Pad(sdl2::controller::Button, bool),
     /// A controller axis moved (-32768..32767; triggers 0..32767).
     Axis(sdl2::controller::Axis, i16),
+    /// The mouse moved with no button held (window x, y).
+    Hover(f32, f32),
+    /// A controller was connected (true) or disconnected (false).
+    PadPlugged(bool),
 }
 
 /// Local Match player number of this window (`--player=N`, default 1).
@@ -153,6 +157,7 @@ impl Window {
                 Event::Quit { .. } => self.quit = true,
                 Event::MouseButtonDown { mouse_btn: MouseButton::Left, x, y, .. } => out.push(Input::Mouse(0, x as f32, y as f32)),
                 Event::MouseMotion { mousestate, x, y, .. } if mousestate.left() => out.push(Input::Mouse(1, x as f32, y as f32)),
+                Event::MouseMotion { x, y, .. } => out.push(Input::Hover(x as f32, y as f32)),
                 Event::MouseButtonUp { mouse_btn: MouseButton::Left, x, y, .. } => out.push(Input::Mouse(3, x as f32, y as f32)),
                 Event::MouseButtonDown { mouse_btn: MouseButton::Right, .. } => out.push(Input::RightMouse(true)),
                 Event::MouseButtonUp { mouse_btn: MouseButton::Right, .. } => out.push(Input::RightMouse(false)),
@@ -173,6 +178,13 @@ impl Window {
                     out.push(Input::Key(k, false, keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD)))
                 }
                 Event::ControllerDeviceAdded { which, .. } => added.push(which),
+                Event::ControllerDeviceRemoved { which, .. } if pad_ids.contains(&which) => {
+                    if let Some(i) = self.pads.iter().position(|p| p.instance_id() == which) {
+                        println!("controller disconnected: {}", self.pads[i].name());
+                        self.pads.remove(i);
+                    }
+                    out.push(Input::PadPlugged(false));
+                }
                 Event::ControllerButtonDown { button, which, .. } if wanted(which) => out.push(Input::Pad(button, true)),
                 Event::ControllerButtonUp { button, which, .. } if wanted(which) => out.push(Input::Pad(button, false)),
                 Event::ControllerAxisMotion { axis, value, which, .. } if wanted(which) => out.push(Input::Axis(axis, value)),
@@ -187,10 +199,16 @@ impl Window {
                 if let Ok(pad) = gc.open(which) {
                     println!("controller connected: {}", pad.name());
                     self.pads.push(pad);
+                    out.push(Input::PadPlugged(true));
                 }
             }
         }
         out
+    }
+
+    /// Shows or hides the system's mouse cursor (the menus draw their own).
+    pub fn show_cursor(&self, on: bool) {
+        self._sdl.mouse().show_cursor(on);
     }
 
     /// Controllers connected now.

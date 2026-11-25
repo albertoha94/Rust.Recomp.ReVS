@@ -111,6 +111,53 @@ fn shift(h: &Host, o: u32, dy: i32, depth: u32) {
     }
 }
 
+/// Where the help button goes (its top, points): under the black title bar.
+const HELP_Y: i32 = 40;
+/// Where the first scoreboard row goes (its layout's top, points; the row
+/// starts 4 below it): just under the header's message plate (notice.rs,
+/// y 4 to 19), so the message never covers P1. The game puts it at 0.
+const SCORE_Y: i32 = 17;
+
+/// Moves a part (and its touch areas) so its top is at `y`.
+fn move_to_y(h: &Host, o: u32, y: i32) {
+    let dy = y - h.rd32(o + 0x40) as i32;
+    if dy == 0 {
+        return;
+    }
+    if kind_of_vt(h, o).is_some() {
+        for off in [0xb4, 0xc8] {
+            h.wr32(o + off, (h.rd32(o + off) as i32 + dy) as u32);
+        }
+    }
+    shift(h, o, dy, 0);
+}
+
+/// The port's actions bar (actions.rs), x, y, w, h: buttons under it move up.
+static KEEP_CLEAR: Mutex<Option<[f32; 4]>> = Mutex::new(None);
+
+/// Sets the area the game's buttons must leave free (None: none).
+pub fn keep_clear(r: Option<[f32; 4]>) {
+    *KEEP_CLEAR.lock().unwrap() = r;
+}
+
+/// A button low on the screen and under the actions bar moves up above it
+/// (with its pictures and touch areas). Done before every draw: the game may
+/// put it back.
+fn clear_bar(h: &Host, o: u32) {
+    let Some(bar) = *KEEP_CLEAR.lock().unwrap() else { return };
+    let r = rect_of(h, o);
+    let over = r[0] < bar[0] + bar[2] && bar[0] < r[0] + r[2] && r[1] < bar[1] + bar[3] && bar[1] < r[1] + r[3];
+    // Not a full-screen touch area: only buttons in the lower half.
+    if !over || r[2] <= 0.0 || r[3] <= 0.0 || r[1] < 160.0 {
+        return;
+    }
+    let dy = (bar[1] - 2.0 - (r[1] + r[3])).floor() as i32;
+    for off in [0xb4, 0xc8] {
+        h.wr32(o + off, (h.rd32(o + off) as i32 + dy) as u32);
+    }
+    shift(h, o, dy, 0);
+}
+
 /// The first part under `o` whose image is the sheet area `src` (x, y, w, h
 /// at +0x98..+0xa4).
 fn find_src(h: &Host, o: u32, src: [u32; 4], depth: u32) -> Option<u32> {
@@ -150,13 +197,73 @@ fn title_credit(h: &Host, root: u32) {
     }
 }
 
+/// Title screen: "Tap" (`ImgTouch`, on another sheet) shows the port's "Press
+/// any key" from the title sheet (textures.rs): it takes the copyright part's
+/// sheet (+0x90), the picture's area, and its size, centred where "Tap" was.
+/// The game still fades it in and out (alpha at +0x4c).
+fn title_press(h: &Host, root: u32) {
+    let Some((pw, ph)) = crate::textures::press_size() else { return };
+    if root == 0 || find(h, root, "ImgTitle", 0).is_none() {
+        return;
+    }
+    let Some(touch) = find(h, root, "ImgTouch", 0) else { return };
+    let (ax, ay) = crate::textures::PRESS_AT;
+    if [0x98, 0x9c].map(|k| h.rd32(touch + k)) == [ax, ay] {
+        return;
+    }
+    let (lx, ly) = crate::textures::TITLE_LINE_AT;
+    let line = find_src(h, root, crate::textures::COPYRIGHT_SRC, 0).or_else(|| {
+        let w = crate::textures::title_line_w();
+        find_src(h, root, [lx, ly, w, crate::textures::COPYRIGHT_SRC[3]], 0)
+    });
+    let Some(line) = line else { return };
+    h.wr32(touch + 0x90, h.rd32(line + 0x90));
+    for (k, v) in [(0x98, ax), (0x9c, ay), (0xa0, pw), (0xa4, ph)] {
+        h.wr32(touch + k, v);
+    }
+    // The centre of "Tap" (x, y, w, h at +0x58..+0x64).
+    let (x, y, w, hh) = (h.rd32(touch + 0x58), h.rd32(touch + 0x5c), h.rd32(touch + 0x44), h.rd32(touch + 0x48));
+    let (nx, ny) = ((x + w / 2).saturating_sub(pw / 2), (y + hh / 2).saturating_sub(ph / 2));
+    for k in [0x30, 0x3c, 0x58, 0x64] {
+        h.wr32(touch + k, nx);
+    }
+    for k in [0x34, 0x40, 0x5c, 0x68] {
+        h.wr32(touch + k, ny);
+    }
+    for (k, v) in [(0x44, pw), (0x6c, pw), (0x48, ph), (0x70, ph)] {
+        h.wr32(touch + k, v);
+    }
+}
+
 /// The port's changes to the menu screens, made just before each draw:
 /// - title menu: the video button (and its animated overlay) removed;
 /// - Options: "Get More" removed and "Language" moved up into its place;
 /// - Other Settings: the "Icon Layout" arrows removed, so the on-screen
 ///   button layout the controller mapping uses stays as saved.
 fn edit_screens(h: &Host, root: u32) {
+    title_press(h, root);
     title_credit(h, root);
+    if root == 0 {
+        return;
+    }
+    // Help ("?"): top left, just under the screens' black title bar.
+    if let Some(o) = find(h, root, "BtnHelp", 0) {
+        move_to_y(h, o, HELP_Y);
+    }
+    // Online Match: greyed (not pressable; the port draws it dimmed).
+    if let Some(o) = find(h, root, "BtnOnline", 0) {
+        h.wr8(o + 0x50, 0);
+        h.wr32(o + 0xb0, OFFSCREEN);
+        h.wr32(o + 0xc4, OFFSCREEN);
+    }
+    // The match scoreboard (one layout per player, 20 points apart): down
+    // a little, under the header's message.
+    let name = name_of(h, root);
+    if let Some(n) = name.strip_prefix("Sub_lytScore").and_then(|n| n.parse::<i32>().ok()) {
+        if (1..=4).contains(&n) {
+            move_to_y(h, root, SCORE_Y + 20 * (n - 1));
+        }
+    }
     let [title, opt, ctrlb] = *SCREENS.lock().unwrap();
     if root != 0 && root == ctrlb {
         let mut arrows = Vec::new();
@@ -211,9 +318,10 @@ pub struct Btn {
     pub enabled: bool,
     /// x, y, w, h in landscape game points.
     pub rect: [f32; 4],
-    /// Its visible pictures' areas on the texture sheet (x, y, w, h); a
-    /// lobby portrait tells the character by it.
-    pub pics: Vec<[u32; 4]>,
+    /// Its visible pictures: the area on the texture sheet (x, y, w, h; a
+    /// lobby portrait tells the character by it) and where it is drawn
+    /// (landscape points).
+    pub pics: Vec<([u32; 4], [f32; 4])>,
 }
 
 impl Btn {
@@ -223,6 +331,16 @@ impl Btn {
     pub fn contains(&self, p: (f32, f32)) -> bool {
         p.0 >= self.rect[0] && p.1 >= self.rect[1] && p.0 < self.rect[0] + self.rect[2] && p.1 < self.rect[1] + self.rect[3]
     }
+}
+
+/// A visible picture part named Img*.
+#[derive(Clone, Debug)]
+pub struct Img {
+    pub name: String,
+    /// Its area on the texture sheet (x, y, w, h).
+    pub src: [u32; 4],
+    /// Where it is drawn (landscape points).
+    pub rect: [f32; 4],
 }
 
 #[derive(Default)]
@@ -236,8 +354,8 @@ struct Lists {
     current_roots: Vec<String>,
     last_roots: Vec<String>,
     /// Visible pictures named Img*, with their sheet area (this frame, last).
-    current_imgs: Vec<(String, [u32; 4])>,
-    last_imgs: Vec<(String, [u32; 4])>,
+    current_imgs: Vec<Img>,
+    last_imgs: Vec<Img>,
     /// Hidden buttons inside drawn layouts, with their (visible) pictures:
     /// the game draws those pictures anyway (another player's lobby
     /// portrait, dimmed). Not for the focus.
@@ -303,7 +421,7 @@ fn dump(h: &Host, o: u32, depth: u32) {
 }
 
 /// The visible pictures among a part's children (their sheet areas).
-fn pics_of(h: &Host, o: u32) -> Vec<[u32; 4]> {
+fn pics_of(h: &Host, o: u32) -> Vec<([u32; 4], [f32; 4])> {
     let (n, kids) = (h.rd32(o + 0x18), h.rd32(o + 0xc));
     let mut pics = Vec::new();
     if kids != 0 && n < 64 {
@@ -314,7 +432,7 @@ fn pics_of(h: &Host, o: u32) -> Vec<[u32; 4]> {
             }
             let src = [0x98, 0x9c, 0xa0, 0xa4].map(|o| h.rd32(k + o));
             if h.rd8(k + 0x51) != 0 && src[2] > 0 && src[2] < 4096 {
-                pics.push(src);
+                pics.push((src, rect_of(h, k)));
             }
         }
     }
@@ -349,6 +467,9 @@ fn walk(h: &Host, l: &mut Lists, o: u32, root: &str, depth: u32) {
                 }
             }
         }
+        if name != "BtnBack" {
+            clear_bar(h, o);
+        }
         let enabled = h.rd8(o + 0x50) != 0;
         let pics = pics_of(h, o);
         l.current.push(Btn { name, root: root.to_string(), kind, enabled, rect: rect_of(h, o), pics });
@@ -356,7 +477,7 @@ fn walk(h: &Host, l: &mut Lists, o: u32, root: &str, depth: u32) {
         return;
     }
     if name.starts_with("Img") {
-        l.current_imgs.push((name, [0x98, 0x9c, 0xa0, 0xa4].map(|k| h.rd32(o + k))));
+        l.current_imgs.push(Img { src: [0x98, 0x9c, 0xa0, 0xa4].map(|k| h.rd32(o + k)), rect: rect_of(h, o), name });
     }
     if kids != 0 && n < 256 {
         for i in 0..n {
@@ -409,7 +530,13 @@ pub fn roots() -> Vec<String> {
 /// The sheet area of the visible picture `name` in the last complete frame.
 pub fn image(name: &str) -> Option<[u32; 4]> {
     let guard = LISTS.lock().unwrap();
-    guard.as_ref()?.last_imgs.iter().find(|e| e.0 == name).map(|e| e.1)
+    guard.as_ref()?.last_imgs.iter().find(|e| e.name == name).map(|e| e.src)
+}
+
+/// The visible Img* pictures of the last complete frame.
+pub fn images() -> Vec<Img> {
+    let guard = LISTS.lock().unwrap();
+    guard.as_ref().map_or(Vec::new(), |l| l.last_imgs.clone())
 }
 
 /// Hidden buttons in the drawn layouts of the last complete frame (with the

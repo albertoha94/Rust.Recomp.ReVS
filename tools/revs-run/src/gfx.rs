@@ -85,11 +85,75 @@ pub enum Ui {
     Disc((f32, f32), f32, [f32; 3], [f32; 3]),
     /// Filled triangle, RGB.
     Tri([(f32, f32); 3], [f32; 3]),
-    /// Text in capitals (5 x 7 font): left end and vertical centre, dot size, RGB.
-    Text((f32, f32), String, f32, [f32; 3]),
+    /// Text in capitals (5 x 7 font): left end and vertical centre, dot size, RGBA.
+    Text((f32, f32), String, f32, [f32; 4]),
+    /// Rounded rectangle (x, y, w, h), corner radius, RGBA at the top and at
+    /// the bottom (a vertical gradient).
+    RoundRect([f32; 4], f32, [f32; 4], [f32; 4]),
+    /// Filled circle: centre, radius, RGBA.
+    Circle((f32, f32), f32, [f32; 4]),
+    /// Text in the game's menu font (font.rs): left end and vertical centre,
+    /// cell height in points, RGBA; with a soft dark shadow. Falls back to the
+    /// 5 x 7 font until the game's font is known.
+    Label((f32, f32), String, f32, [f32; 4]),
+    /// Filled polygon (any simple outline, either winding), RGBA at its top
+    /// and at its bottom (a vertical gradient).
+    Poly(Vec<(f32, f32)>, [f32; 4], [f32; 4]),
 }
 
-/// 5 x 7 capitals for the port's menu text (rows top down, bit 4 = left).
+/// Triangles covering a simple polygon (ear clipping), as index triples.
+pub fn triangulate(p: &[(f32, f32)]) -> Vec<[usize; 3]> {
+    let n = p.len();
+    let mut out = Vec::new();
+    if n < 3 {
+        return out;
+    }
+    let area: f32 = (0..n).map(|i| {
+        let (a, b) = (p[i], p[(i + 1) % n]);
+        a.0 * b.1 - b.0 * a.1
+    }).sum();
+    let sign = if area >= 0.0 { 1.0 } else { -1.0 };
+    let cross = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    let inside = |q: (f32, f32), a, b, c| {
+        let (d1, d2, d3) = (cross(a, b, q) * sign, cross(b, c, q) * sign, cross(c, a, q) * sign);
+        // On an edge counts as inside: such a point (a reflex corner) must
+        // not be cut off.
+        d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0
+    };
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut guard = 0;
+    while idx.len() > 3 && guard < n * n {
+        guard += 1;
+        let m = idx.len();
+        let mut cut = None;
+        for k in 0..m {
+            let (i0, i1, i2) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
+            let (a, b, c) = (p[i0], p[i1], p[i2]);
+            if cross(a, b, c) * sign <= 0.0 {
+                continue;
+            }
+            if idx.iter().any(|&j| p[j] != a && p[j] != b && p[j] != c && inside(p[j], a, b, c)) {
+                continue;
+            }
+            cut = Some(k);
+            out.push([i0, i1, i2]);
+            break;
+        }
+        match cut {
+            Some(k) => {
+                idx.remove(k);
+            }
+            None => break,
+        }
+    }
+    if idx.len() == 3 {
+        out.push([idx[0], idx[1], idx[2]]);
+    }
+    out
+}
+
+/// 5 x 7 glyphs for the port's menu text (rows top down, bit 4 = left);
+/// letters are drawn as capitals.
 fn glyph5(ch: char) -> [u8; 7] {
     match ch {
         'A' => [14, 17, 17, 31, 17, 17, 17],
@@ -97,19 +161,64 @@ fn glyph5(ch: char) -> [u8; 7] {
         'C' => [14, 17, 16, 16, 16, 17, 14],
         'D' => [30, 17, 17, 17, 17, 17, 30],
         'E' => [31, 16, 16, 30, 16, 16, 31],
+        'F' => [31, 16, 16, 30, 16, 16, 16],
         'G' => [14, 17, 16, 23, 17, 17, 15],
+        'H' => [17, 17, 17, 31, 17, 17, 17],
+        'I' => [14, 4, 4, 4, 4, 4, 14],
+        'J' => [7, 2, 2, 2, 2, 18, 12],
         'K' => [17, 18, 20, 24, 20, 18, 17],
         'L' => [16, 16, 16, 16, 16, 16, 31],
+        'M' => [17, 27, 21, 21, 17, 17, 17],
         'N' => [17, 25, 21, 19, 17, 17, 17],
         'O' => [14, 17, 17, 17, 17, 17, 14],
         'P' => [30, 17, 17, 30, 16, 16, 16],
+        'Q' => [14, 17, 17, 17, 21, 18, 13],
         'R' => [30, 17, 17, 30, 20, 18, 17],
+        'S' => [15, 16, 16, 14, 1, 1, 30],
         'T' => [31, 4, 4, 4, 4, 4, 4],
         'U' => [17, 17, 17, 17, 17, 17, 14],
+        'V' => [17, 17, 17, 17, 17, 10, 4],
         'W' => [17, 17, 17, 21, 21, 21, 10],
+        'X' => [17, 17, 10, 4, 10, 17, 17],
         'Y' => [17, 17, 10, 4, 4, 4, 4],
+        'Z' => [31, 1, 2, 4, 8, 16, 31],
+        '0' => [14, 17, 19, 21, 25, 17, 14],
+        '1' => [4, 12, 4, 4, 4, 4, 14],
+        '2' => [14, 17, 1, 2, 4, 8, 31],
+        '3' => [31, 2, 4, 2, 1, 17, 14],
+        '4' => [2, 6, 10, 18, 31, 2, 2],
+        '5' => [31, 16, 30, 1, 1, 17, 14],
+        '6' => [6, 8, 16, 30, 17, 17, 14],
+        '7' => [31, 1, 2, 4, 8, 8, 8],
+        '8' => [14, 17, 17, 14, 17, 17, 14],
+        '9' => [14, 17, 17, 15, 1, 2, 12],
+        '.' => [0, 0, 0, 0, 0, 12, 12],
+        ',' => [0, 0, 0, 0, 12, 4, 8],
+        '-' => [0, 0, 0, 31, 0, 0, 0],
+        ':' => [0, 12, 12, 0, 12, 12, 0],
+        '!' => [4, 4, 4, 4, 4, 0, 4],
+        '?' => [14, 17, 1, 2, 4, 0, 4],
+        '/' => [1, 1, 2, 4, 8, 16, 16],
+        '+' => [0, 4, 4, 31, 4, 4, 0],
+        '(' => [2, 4, 8, 8, 8, 4, 2],
+        ')' => [8, 4, 2, 2, 2, 4, 8],
+        '\'' => [4, 4, 8, 0, 0, 0, 0],
+        '\u{b7}' => [0, 0, 0, 4, 0, 0, 0],
         _ => [0; 7],
     }
+}
+
+/// Width of a `Ui::Label` of `text` with cells `size` points high.
+pub fn label_width(text: &str, size: f32) -> f32 {
+    match (crate::font::get(), crate::textures::font_tex()) {
+        (Some(f), Some(_)) => f.width(text, size),
+        _ => text_width(text, fallback_px(size)),
+    }
+}
+
+/// The 5 x 7 font's dot size standing in for a label `size` points high.
+fn fallback_px(size: f32) -> f32 {
+    size / 12.0
 }
 
 /// Width of `text` in the 5 x 7 font at dot size `px`.
@@ -168,8 +277,114 @@ unsafe fn draw_ui(items: &[Ui]) {
                 }
                 gl::End();
             }
+            Ui::RoundRect([x, y, w, h], r, top, bottom) => {
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::ShadeModel(gl::SMOOTH);
+                let r = r.min(w / 2.0).min(h / 2.0);
+                let shade = |py: f32| {
+                    let t = ((py - y) / h).clamp(0.0, 1.0);
+                    let m = |i: usize| top[i] + (bottom[i] - top[i]) * t;
+                    gl::Color4f(m(0), m(1), m(2), m(3));
+                };
+                gl::Begin(gl::TRIANGLE_FAN);
+                let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+                shade(cy);
+                let (vx, vy) = ndc(cx, cy);
+                gl::Vertex2f(vx, vy);
+                // Corners clockwise from the top left, 8 steps each.
+                let corners = [(x + r, y + r, 180.0_f32), (x + w - r, y + r, 270.0), (x + w - r, y + h - r, 0.0), (x + r, y + h - r, 90.0)];
+                let mut first = None;
+                for (ox, oy, start) in corners {
+                    for k in 0..=8 {
+                        let a = (start + k as f32 * 90.0 / 8.0).to_radians();
+                        let (px, py) = (ox + r * a.cos(), oy + r * a.sin());
+                        first.get_or_insert((px, py));
+                        shade(py);
+                        let (vx, vy) = ndc(px, py);
+                        gl::Vertex2f(vx, vy);
+                    }
+                }
+                if let Some((px, py)) = first {
+                    shade(py);
+                    let (vx, vy) = ndc(px, py);
+                    gl::Vertex2f(vx, vy);
+                }
+                gl::End();
+                gl::Disable(gl::BLEND);
+            }
+            Ui::Label((x0, cy), text, size, c) => {
+                let (Some(font), Some(tex)) = (crate::font::get(), crate::textures::font_tex()) else {
+                    draw_ui(&[Ui::Text((*x0, *cy), text.clone(), fallback_px(*size), *c)]);
+                    continue;
+                };
+                let k = size / font.cell_h;
+                let top = cy - size / 2.0;
+                gl::Enable(gl::TEXTURE_2D);
+                gl::BindTexture(gl::TEXTURE_2D, tex);
+                gl::TexEnvi(gl::TEXTURE_ENV, gl::TEXTURE_ENV_MODE, gl::MODULATE as _);
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                // A shadow a little down and right, then the text.
+                let shadow = size * 0.06;
+                for (dx, col) in [(shadow, [0.0, 0.03, 0.03, c[3] * 0.7]), (0.0, *c)] {
+                    gl::Color4f(col[0], col[1], col[2], col[3]);
+                    gl::Begin(gl::QUADS);
+                    let mut x = *x0 + dx;
+                    for ch in text.chars() {
+                        let Some(g) = font.glyph(ch) else { continue };
+                        let (w, h) = (g.w * k, font.cell_h * k);
+                        let (u0, v0, u1, v1) = (g.x / font.tex_w, g.y / font.tex_h, (g.x + g.w) / font.tex_w, (g.y + font.cell_h) / font.tex_h);
+                        for (px, py, u, v) in [(x, top + dx, u0, v0), (x + w, top + dx, u1, v0), (x + w, top + dx + h, u1, v1), (x, top + dx + h, u0, v1)] {
+                            gl::TexCoord2f(u, v);
+                            let (vx, vy) = ndc(px, py);
+                            gl::Vertex2f(vx, vy);
+                        }
+                        x += w;
+                    }
+                    gl::End();
+                }
+                gl::Disable(gl::BLEND);
+                gl::Disable(gl::TEXTURE_2D);
+            }
+            Ui::Poly(pts, top, bottom) => {
+                let (y0, y1) = pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::ShadeModel(gl::SMOOTH);
+                gl::Begin(gl::TRIANGLES);
+                for t in triangulate(pts) {
+                    for i in t {
+                        let (px, py) = pts[i];
+                        let k = if y1 > y0 { (py - y0) / (y1 - y0) } else { 0.0 };
+                        let m = |j: usize| top[j] + (bottom[j] - top[j]) * k;
+                        gl::Color4f(m(0), m(1), m(2), m(3));
+                        let (vx, vy) = ndc(px, py);
+                        gl::Vertex2f(vx, vy);
+                    }
+                }
+                gl::End();
+                gl::Disable(gl::BLEND);
+            }
+            Ui::Circle((cx, cy), r, c) => {
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::Color4f(c[0], c[1], c[2], c[3]);
+                gl::Begin(gl::TRIANGLE_FAN);
+                let (vx, vy) = ndc(*cx, *cy);
+                gl::Vertex2f(vx, vy);
+                for k in 0..=24 {
+                    let a = k as f32 / 24.0 * std::f32::consts::TAU;
+                    let (vx, vy) = ndc(cx + r * a.cos(), cy + r * a.sin());
+                    gl::Vertex2f(vx, vy);
+                }
+                gl::End();
+                gl::Disable(gl::BLEND);
+            }
             Ui::Text((x0, cy), text, px, c) => {
-                gl::Color3f(c[0], c[1], c[2]);
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::Color4f(c[0], c[1], c[2], c[3]);
                 gl::Begin(gl::QUADS);
                 let y0 = cy - 3.5 * px;
                 for (i, ch) in text.chars().enumerate() {
@@ -182,6 +397,7 @@ unsafe fn draw_ui(items: &[Ui]) {
                     }
                 }
                 gl::End();
+                gl::Disable(gl::BLEND);
             }
         }
     }
@@ -207,21 +423,110 @@ fn ndc(x: f32, y: f32) -> (f32, f32) {
     (x / 480.0 * 2.0 - 1.0, 1.0 - y / 320.0 * 2.0)
 }
 
+/// The game's menu teal, its bright edge, and the dark of its plates.
+const TEAL: [f32; 3] = [0.33, 0.78, 0.68];
+const TEAL_HI: [f32; 3] = [0.66, 0.97, 0.88];
+const PLATE: [f32; 3] = [0.02, 0.05, 0.05];
+
+/// A rectangle outline `t` thick, as quads (landscape points), RGBA.
+unsafe fn frame_quads([x, y, w, h]: [f32; 4], t: f32, c: [f32; 4]) {
+    use gl21 as gl;
+    gl::Color4f(c[0], c[1], c[2], c[3]);
+    gl::Begin(gl::QUADS);
+    for [qx, qy, qw, qh] in [[x, y, w, t], [x, y + h - t, w, t], [x, y + t, t, h - 2.0 * t], [x + w - t, y + t, t, h - 2.0 * t]] {
+        for (px, py) in [(qx, qy), (qx + qw, qy), (qx + qw, qy + qh), (qx, qy + qh)] {
+            let (vx, vy) = ndc(px, py);
+            gl::Vertex2f(vx, vy);
+        }
+    }
+    gl::End();
+}
+
+/// The selection box: the teal edge of the game's menu buttons, with a soft
+/// glow outside it and brighter corners.
+unsafe fn draw_selection([x, y, w, h]: [f32; 4]) {
+    use gl21 as gl;
+    gl::Enable(gl::BLEND);
+    gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+    // A dark line keeps it readable on light pictures, then the glow.
+    frame_quads([x - 2.5, y - 2.5, w + 5.0, h + 5.0], 1.0, [PLATE[0], PLATE[1], PLATE[2], 0.55]);
+    for (grow, a) in [(4.5, 0.10), (3.5, 0.18), (2.5, 0.30)] {
+        frame_quads([x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow], 1.0, [TEAL[0], TEAL[1], TEAL[2], a]);
+    }
+    frame_quads([x - 1.5, y - 1.5, w + 3.0, h + 3.0], 1.2, [TEAL_HI[0], TEAL_HI[1], TEAL_HI[2], 0.95]);
+    // Corners: short brackets, a little thicker.
+    let (l, t) = (7.0_f32.min(w / 3.0), 2.0);
+    let (x0, y0, x1, y1) = (x - 2.3, y - 2.3, x + w + 2.3, y + h + 2.3);
+    gl::Color4f(0.85, 1.0, 0.95, 1.0);
+    gl::Begin(gl::QUADS);
+    for [qx, qy, qw, qh] in [
+        [x0, y0, l, t], [x0, y0, t, l],
+        [x1 - l, y0, l, t], [x1 - t, y0, t, l],
+        [x0, y1 - t, l, t], [x0, y1 - l, t, l],
+        [x1 - l, y1 - t, l, t], [x1 - t, y1 - l, t, l],
+    ] {
+        for (px, py) in [(qx, qy), (qx + qw, qy), (qx + qw, qy + qh), (qx, qy + qh)] {
+            let (vx, vy) = ndc(px, py);
+            gl::Vertex2f(vx, vy);
+        }
+    }
+    gl::End();
+    gl::Disable(gl::BLEND);
+}
+
+/// The menu pointer: a triangle pointing up and left, its tip at `at`
+/// (landscape points), in the menu teal (bright at the tip, deeper at the
+/// base) with a dark outline and a bright inner edge. `px` is window pixels
+/// per point (for the lines' width).
+unsafe fn draw_pointer(at: (f32, f32), px: f32) {
+    use gl21 as gl;
+    const P: [(f32, f32); 3] = [(0.0, 0.0), (5.0, 18.0), (18.0, 5.0)];
+    let v = |p: (f32, f32)| ndc(at.0 + p.0, at.1 + p.1);
+    let shade = |p: (f32, f32)| {
+        let t = ((p.0 + p.1) / 23.0).min(1.0);
+        [TEAL_HI[0] + (TEAL[0] * 0.75 - TEAL_HI[0]) * t, TEAL_HI[1] + (TEAL[1] * 0.75 - TEAL_HI[1]) * t, TEAL_HI[2] + (TEAL[2] * 0.75 - TEAL_HI[2]) * t]
+    };
+    gl::ShadeModel(gl::SMOOTH);
+    gl::Begin(gl::TRIANGLES);
+    for p in P {
+        let c = shade(p);
+        gl::Color3f(c[0], c[1], c[2]);
+        let (x, y) = v(p);
+        gl::Vertex2f(x, y);
+    }
+    gl::End();
+    // A bright edge just inside, then the dark outline.
+    let inner = |p: (f32, f32)| {
+        let (gx, gy) = (23.0 / 3.0, 23.0 / 3.0);
+        (gx + (p.0 - gx) * 0.78, gy + (p.1 - gy) * 0.78)
+    };
+    gl::Enable(gl::BLEND);
+    gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+    gl::LineWidth((px * 0.6).max(1.0));
+    gl::Color4f(0.9, 1.0, 0.96, 0.55);
+    gl::Begin(gl::LINE_LOOP);
+    for p in P {
+        let (x, y) = v(inner(p));
+        gl::Vertex2f(x, y);
+    }
+    gl::End();
+    gl::Disable(gl::BLEND);
+    gl::LineWidth((px * 1.2).max(1.0));
+    gl::Color3f(PLATE[0], PLATE[1], PLATE[2]);
+    gl::Begin(gl::LINE_LOOP);
+    for p in P {
+        let (x, y) = v(p);
+        gl::Vertex2f(x, y);
+    }
+    gl::End();
+}
+
 /// Draws the focus rectangle and the badges (GL state already set up for
 /// untextured 2D in window space by `present`).
 unsafe fn draw_overlay(focus: Option<[f32; 4]>, badges: &[Badge]) {
     use gl21 as gl;
-    if let Some([x, y, w, h]) = focus {
-        for (width, r, g, b, grow) in [(5.0, 0.0, 0.0, 0.0, 2.0), (3.0, 1.0, 0.85, 0.2, 2.0)] {
-            gl::LineWidth(width);
-            gl::Color3f(r, g, b);
-            gl::Begin(gl::LINE_LOOP);
-            for (px, py) in [(x - grow, y - grow), (x + w + grow, y - grow), (x + w + grow, y + h + grow), (x - grow, y + h + grow)] {
-                let (vx, vy) = ndc(px, py);
-                gl::Vertex2f(vx, vy);
-            }
-            gl::End();
-        }
+    if let Some(r) = focus {
+        draw_selection(r);
     }
     for bd in badges {
         let (cx, cy) = bd.at;
@@ -380,26 +685,11 @@ impl Gfx {
                 gl::Disable(gl::TEXTURE_2D);
                 draw_overlay(focus, &badges);
             }
-            // The controller's menu pointer: a ring with a dot, in window space.
-            if let Some((px, py)) = pointer {
+            // The menu pointer, over everything.
+            if let Some(at) = pointer {
                 gl::LoadIdentity();
                 gl::Disable(gl::TEXTURE_2D);
-                let (cx, cy) = (px / 480.0 * 2.0 - 1.0, 1.0 - py / 320.0 * 2.0);
-                let (rx, ry) = (9.0 / 480.0 * 2.0, 9.0 / 320.0 * 2.0);
-                for (width, r, g, b) in [(4.0, 0.0, 0.0, 0.0), (2.0, 1.0, 0.85, 0.2)] {
-                    gl::LineWidth(width);
-                    gl::Color3f(r, g, b);
-                    gl::Begin(gl::LINE_LOOP);
-                    for k in 0..24 {
-                        let a = k as f32 / 24.0 * std::f32::consts::TAU;
-                        gl::Vertex2f(cx + rx * a.cos(), cy + ry * a.sin());
-                    }
-                    gl::End();
-                }
-                gl::PointSize(4.0);
-                gl::Begin(gl::POINTS);
-                gl::Vertex2f(cx, cy);
-                gl::End();
+                draw_pointer(at, vw / 480.0);
             }
             for mode in [gl::TEXTURE, gl::PROJECTION, gl::MODELVIEW] {
                 gl::MatrixMode(mode);
@@ -1029,4 +1319,25 @@ fn log_draw(base: *mut u8, count: u32, ty: u32, idx: u32, idx_in_buffer: bool, m
         "draw: {count} indices (max index {maxi}), vertices {size} floats stride {stride} at {vaddr:#x}: box {lo:?}..{hi:?}, {bad} bad values; eye {:?} ndc ({:.2}, {:.2}, {:.2}) mode {mode:#x}",
         &eye[..3], clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]
     );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn triangulate_concave() {
+        // An L shape (area 3): 4 triangles covering it, in either winding.
+        let l = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 2.0), (0.0, 2.0)];
+        for pts in [l.to_vec(), l.iter().rev().copied().collect()] {
+            let t = super::triangulate(&pts);
+            assert_eq!(t.len(), 4);
+            let area: f32 = t
+                .iter()
+                .map(|&[a, b, c]| {
+                    let (a, b, c) = (pts[a], pts[b], pts[c]);
+                    ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)).abs() / 2.0
+                })
+                .sum();
+            assert!((area - 3.0).abs() < 1e-5);
+        }
+    }
 }

@@ -257,6 +257,21 @@ pub fn characters() -> usize {
     recipes().chars.len()
 }
 
+/// A character's name (as in the colour files), "?" if unknown.
+pub fn char_name(ch: usize) -> String {
+    recipes().chars.get(ch).map_or_else(|| "?".to_string(), |c| c.name.clone())
+}
+
+/// The character with this name.
+pub fn char_index(name: &str) -> Option<usize> {
+    recipes().chars.iter().position(|c| c.name.eq_ignore_ascii_case(name))
+}
+
+/// The colour a character wears unless one is picked (its own outfit).
+pub fn default_colour(ch: usize) -> usize {
+    recipes().chars.get(ch).map_or(0, |c| c.start)
+}
+
 // ---- Which colour each player wears.
 //
 // - your own player: the colour you last chose for that character (saved in

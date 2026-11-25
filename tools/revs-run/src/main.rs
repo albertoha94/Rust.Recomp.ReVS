@@ -23,6 +23,7 @@
 
 mod audio;
 mod colorui;
+mod font;
 mod fs;
 mod game;
 mod gamekit;
@@ -39,6 +40,9 @@ mod recolor;
 mod textures;
 mod tweaks;
 mod net;
+mod notice;
+mod actions;
+mod records;
 mod os;
 mod touch;
 mod uikit;
@@ -148,6 +152,9 @@ impl Host {
     }
     pub fn wr32(&self, a: u32, v: u32) {
         unsafe { (self.at(a) as *mut u32).write_unaligned(v) }
+    }
+    pub fn rd16(&self, a: u32) -> u16 {
+        unsafe { (self.at(a) as *const u16).read_unaligned() }
     }
     pub fn rd8(&self, a: u32) -> u8 {
         unsafe { *self.at(a) }
@@ -488,6 +495,7 @@ fn main() {
     }
     // Each player's colour per character (port_colors.txt next to the save).
     recolor::init(&home);
+    records::init(&home);
     let list = build.join("recomp/images.json");
     let images: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(&list).unwrap_or_else(|e| panic!("{}: {e} (run `revs-analyze recompile` first)", list.display())))
@@ -826,7 +834,7 @@ fn trace_setup() {
         }
     }
     add_hook(MIS_DRAW);
-    for a in recolor::HOOKS {
+    for a in recolor::HOOKS.into_iter().chain(font::HOOKS).chain(records::HOOKS) {
         add_hook(a);
     }
     let _ = TRACED.set(traced);
@@ -902,6 +910,12 @@ pub(crate) unsafe extern "C" fn rc_trace(c: *mut Cpu, addr: u32) -> i32 {
     }
     if recolor::HOOKS.contains(&addr) {
         recolor::on_enter(host(), addr, (*c).r[0], (*c).r[1], (*c).r[14]);
+    }
+    if records::HOOKS.contains(&addr) {
+        records::on_enter(addr, [(*c).r[0], (*c).r[1], (*c).r[2], (*c).r[3]]);
+    }
+    if font::HOOKS.contains(&addr) {
+        font::on_enter(host(), addr, (*c).r[0]);
     }
     if addr == RENDER {
         tweaks::each_frame(host());

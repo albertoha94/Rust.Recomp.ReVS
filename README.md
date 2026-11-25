@@ -44,10 +44,15 @@ has checked it yet: please report what you find.
 | Keyboard and mouse (mouse = touch), the layouts in "Controls" below | Tested (scripted keys and mouse) |
 | Xbox-style controller (SDL; also when plugged in later), same layouts | Not tested by script yet (same code paths as the keyboard) |
 | Gameplay / menu / inventory layouts switch by themselves, read from the game's own state | Tested |
-| Menu focus rectangle on the D-pad / arrows, jumping between the game's buttons; stick pointer | Tested (keyboard) |
+| Menu selection box (teal, always on a button, the top one when a screen opens) on the D-pad / arrows; pointer always shown (mouse, either stick), taking the box to the button under it | Tested (scripted keys) |
+| Header: "Control scheme changed." and the scheme's icon when you switch between keyboard / mouse and a controller; "Control disconnected" when a controller is unplugged | Message tested (scripted keys); unplugging not tested yet |
+| Help ("?") on Select / F1, moved to the top left under the title bar | Tested (F1) |
+| Online Match greyed on the main menu (not pressable by controller, keyboard or mouse) | Tested (click, focus) |
+| Match scoreboard (P1-P4) moved down a little, under the header's message | Tested (Training) |
+| Actions bar in menus (bottom left, in the game's font): Select, Back / Quit, Help, OK, with the controller's or the keyboard's buttons; game buttons under it move up | Tested (both schemes; the moved OK pressed) |
 | Slide-to-confirm bars pressed with A / Enter | Tested |
 | Two fingers at once (walk and aim together) | Tested |
-| Button badges overlay (shown while a controller is connected; hold View 0.8 s to toggle) | Badges tested; View toggle not tested yet |
+| Button badges overlay (shown while the controller is in use) | Badges tested |
 | B / Esc on the main menu closes the game | Tested (Esc) |
 
 ### Menu changes
@@ -57,6 +62,8 @@ has checked it yet: please report what you find.
 | Back (↺) sprite hidden; B / Esc presses the hidden back button | Tested (keyboard); a real mouse press on the hidden button not tested yet |
 | Title screen: video button removed | Tested |
 | Title screen credit: "© CAPCOM 2011 · Recomp by albertoha94" (Capcom's notice stays) | Tested |
+| Title screen: "Tap" reads "Press any key", in the same style | Tested |
+| Main menu logo: drawn sharp, from the title screen's logo | Tested |
 | Options: "Get More" removed, "Language" moved up | Tested |
 | Controls > Other Settings: "Icon Layout" arrows removed; icon transparency and shake sensitivity kept at 0 | Tested |
 | Spanish text: "Monojugador" reads "Un jugador" | Tested (unit test) |
@@ -179,9 +186,13 @@ Each character has 10 outfit colours: Blue, Red, Yellow, Brown, Orange, Green, G
 one starts in its original outfit: Chris Green, Jill Blue, Wesker Black.
 
 - **Character select:** the bar under the character's picture shows the colour (◀ ● GREEN ▶). Click or tap its
-  arrows, or move the D-pad focus onto it, then use left / right (A: the next colour). The character's picture
+  arrows, or move the selection box onto it, then use left / right (A: the next colour). The character's picture
   shows the colour too.
-- **Lobby:** a colour dot left of each player's portrait.
+- **Lobby:** a colour ball on the top right corner of each player's portrait. With the selection box on a
+  portrait, LB / RB (Q / E) step that player's colour back / on.
+- **Results and records:** the match result pages (Total Results, Player Kills...) show each player's ball on their
+  portrait; Coin Shoot's stage records show the colour worn when each record was set (records set before this
+  shows the character's own colour), kept in `port_records.txt` in the save folder.
 - **COM players:** tap a COM's portrait to open character select for it, then pick its colour the same way. By
   default a COM wears its character's starting colour, or the next free one if an earlier player already wears that
   colour on the same character.
@@ -207,11 +218,12 @@ The keys press the game's own touch buttons, so everything the touch screen does
 
 | Menus (pause dialog too) | Controller | Keyboard |
 |---|---|---|
-| focus rectangle between buttons | D-pad | arrows |
-| pointer (drawn as a ring) | left stick | mouse |
-| press the focused button / touch at the pointer | A | Enter |
+| selection box between buttons | D-pad | arrows |
+| pointer (moves the selection box onto the button under it) | left or right stick | mouse |
+| press the selected button | A | Enter |
+| help ("?") | Select (View) | F1 |
 | back (also a dialog's Cancel; closes the game on the main menu) | B | Esc, Backspace |
-| OK / Cancel (bottom centre) | Start | Shift + Enter |
+| OK / Cancel (bottom centre) | Start | Enter on it |
 | side buttons | Y / LB / LT / RB / RT | 1 / 2 / 3 / 4 / 5 |
 | swipe | X | X |
 

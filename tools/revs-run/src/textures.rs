@@ -123,6 +123,8 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
     // New contents for a texture that held an enlarged image (any format, 3D
     // ones too): it is the game's again, with filtering that needs no mipmaps.
     forget_art(tex);
+    forget_logo(tex);
+    let _ = FONT_TEX.compare_exchange(tex, 0, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
     if st.replaced.remove(&tex) {
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::GENERATE_MIPMAP, gl21::FALSE as _);
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::TEXTURE_MIN_FILTER, gl21::LINEAR as _);
@@ -196,10 +198,142 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
     }
     if key == TITLE_SHEET {
         add_title_credit(g, tex_w / w, w, h);
+        add_title_press(g, tex_w / w, w, h);
     }
     if Some(key) == crate::recolor::art_hash() {
         keep_art(tex);
     }
+    if key == MENU_FONT {
+        FONT_TEX.store(tex, std::sync::atomic::Ordering::Relaxed);
+    }
+    if key == LOGO_SHEET {
+        logo_sheet_uploaded(tex, tex_w / w);
+    }
+    if key == TITLE_LOGO_SHEET {
+        title_logo_uploaded(tex_w / w, w, h);
+    }
+}
+
+/// The main menu's logo (`ImgEyecatch`) is a small copy of the title screen's
+/// logo, blurry when enlarged. The port redraws it from the title's sharp
+/// logo, scaled down into the same place on its sheet (visible box onto
+/// visible box), whichever of the two sheets is uploaded last.
+const LOGO_SHEET: u64 = 0xd5188017d419205b;
+const TITLE_LOGO_SHEET: u64 = 0xbb3d6a2652dffc9d;
+/// The main menu logo's area on its sheet, and each logo's visible box (x, y,
+/// w, h), in the game's texels.
+const EYECATCH_AREA: [u32; 4] = [0, 0, 180, 35];
+const EYECATCH_BOX: [f32; 4] = [5.0, 1.0, 168.0, 33.0];
+const TITLE_LOGO_BOX: [f32; 4] = [0.0, 3.0, 403.0, 79.0];
+/// The title logo's corner of its sheet kept (game texels).
+const TITLE_LOGO_KEEP: (u32, u32) = (420, 100);
+
+/// The title logo's corner of its sheet (RGBA) at the sheet's scale `k`.
+struct TitleLogo {
+    k: u32,
+    w: u32,
+    h: u32,
+    px: Vec<u8>,
+}
+
+static TITLE_LOGO: Mutex<Option<TitleLogo>> = Mutex::new(None);
+/// The logo sheet's GL texture and scale.
+static LOGO_TEX: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+
+fn forget_logo(tex: u32) {
+    let mut logo = LOGO_TEX.lock().unwrap();
+    if logo.is_some_and(|(t, _)| t == tex) {
+        *logo = None;
+    }
+}
+
+unsafe fn logo_sheet_uploaded(tex: u32, k: u32) {
+    *LOGO_TEX.lock().unwrap() = Some((tex, k));
+    if let Some(logo) = TITLE_LOGO.lock().unwrap().as_ref() {
+        draw_eyecatch(tex, k, logo);
+    }
+}
+
+/// The title logo sheet is bound: keep its logo, and redraw the menu's.
+unsafe fn title_logo_uploaded(k: u32, w: u32, h: u32) {
+    let (tw, th) = (w * k, h * k);
+    let mut sheet = vec![0u8; (tw * th * 4) as usize];
+    gl21::PixelStorei(gl21::PACK_ALIGNMENT, 1);
+    gl21::GetTexImage(gl21::TEXTURE_2D, 0, gl21::RGBA, gl21::UNSIGNED_BYTE, sheet.as_mut_ptr() as *mut _);
+    let (cw, ch) = ((TITLE_LOGO_KEEP.0 * k).min(tw), (TITLE_LOGO_KEEP.1 * k).min(th));
+    let mut px = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in 0..ch {
+        let i = (y * tw * 4) as usize;
+        px.extend_from_slice(&sheet[i..i + (cw * 4) as usize]);
+    }
+    let logo = TitleLogo { k, w: cw, h: ch, px };
+    if let Some((tex, ke)) = *LOGO_TEX.lock().unwrap() {
+        draw_eyecatch(tex, ke, &logo);
+    }
+    *TITLE_LOGO.lock().unwrap() = Some(logo);
+}
+
+/// The menu logo's area of texture `tex` (scale `k`), from the title logo:
+/// each texel the alpha-weighted average of the title texels it covers.
+unsafe fn draw_eyecatch(tex: u32, k: u32, logo: &TitleLogo) {
+    let [ax, ay, aw, ah] = EYECATCH_AREA.map(|v| v * k);
+    let (e, t) = (EYECATCH_BOX, TITLE_LOGO_BOX);
+    let (ke, kt) = (k as f32, logo.k as f32);
+    // An eyecatch coordinate (its texels) to the title's (its texels), per axis.
+    let to_x = |x: f32| (t[0] + (x / ke - e[0]) * t[2] / e[2]) * kt;
+    let to_y = |y: f32| (t[1] + (y / ke - e[1]) * t[3] / e[3]) * kt;
+    let mut out = vec![0u8; (aw * ah * 4) as usize];
+    for dy in 0..ah {
+        let (y0, y1) = (to_y((ay + dy) as f32), to_y((ay + dy + 1) as f32));
+        for dx in 0..aw {
+            let (x0, x1) = (to_x((ax + dx) as f32), to_x((ax + dx + 1) as f32));
+            let (mut wsum, mut acc) = (0.0f32, [0.0f32; 4]);
+            for sy in y0.floor() as i64..y1.ceil() as i64 {
+                let wy = (y1.min(sy as f32 + 1.0) - y0.max(sy as f32)).max(0.0);
+                for sx in x0.floor() as i64..x1.ceil() as i64 {
+                    let wgt = wy * (x1.min(sx as f32 + 1.0) - x0.max(sx as f32)).max(0.0);
+                    wsum += wgt;
+                    // Outside the kept corner: transparent.
+                    if sx < 0 || sy < 0 || sx >= logo.w as i64 || sy >= logo.h as i64 {
+                        continue;
+                    }
+                    let i = ((sy as u32 * logo.w + sx as u32) * 4) as usize;
+                    let a = logo.px[i + 3] as f32 * wgt;
+                    for c in 0..3 {
+                        acc[c] += logo.px[i + c] as f32 * a;
+                    }
+                    acc[3] += a;
+                }
+            }
+            if wsum <= 0.0 || acc[3] <= 0.0 {
+                continue;
+            }
+            let o = ((dy * aw + dx) * 4) as usize;
+            for c in 0..3 {
+                out[o + c] = (acc[c] / acc[3]).round().min(255.0) as u8;
+            }
+            out[o + 3] = (acc[3] / wsum).round().min(255.0) as u8;
+        }
+    }
+    // Into the logo sheet, leaving the game's GL state as it was.
+    let (mut bound, mut align) = (0, 0);
+    gl21::GetIntegerv(gl21::TEXTURE_BINDING_2D, &mut bound);
+    gl21::GetIntegerv(gl21::UNPACK_ALIGNMENT, &mut align);
+    gl21::BindTexture(gl21::TEXTURE_2D, tex);
+    gl21::PixelStorei(gl21::UNPACK_ALIGNMENT, 1);
+    gl21::TexSubImage2D(gl21::TEXTURE_2D, 0, ax as _, ay as _, aw as _, ah as _, gl21::RGBA, gl21::UNSIGNED_BYTE, out.as_ptr() as *const _);
+    gl21::PixelStorei(gl21::UNPACK_ALIGNMENT, align);
+    gl21::BindTexture(gl21::TEXTURE_2D, bound as u32);
+}
+
+/// The game's menu font sheet (font.rs draws the port's text from it).
+const MENU_FONT: u64 = 0x367663e40dd6ed64;
+/// Its GL texture name (0: not uploaded, or deleted).
+static FONT_TEX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The GL texture of the game's menu font, if uploaded.
+pub fn font_tex() -> Option<u32> {
+    Some(FONT_TEX.load(std::sync::atomic::Ordering::Relaxed)).filter(|&t| t != 0)
 }
 
 /// The character select sheet as uploaded (after any enlarging): the port
@@ -306,9 +440,8 @@ unsafe fn add_title_credit(g: &mut dyn GLES, k: u32, w: u32, h: u32) {
     gl21::PixelStorei(gl21::PACK_ALIGNMENT, 1);
     gl21::GetTexImage(gl21::TEXTURE_2D, 0, gl21::RGBA, gl21::UNSIGNED_BYTE, sheet.as_mut_ptr() as *mut _);
     let [sx, sy, sw, sh] = COPYRIGHT_SRC.map(|v| v * k);
-    // The credit at this scale: 4x as made, else box-filtered down.
-    let f = 4 / k.max(1);
-    let (cw, chh) = (cw4 / f, (ch4 / f).min(sh));
+    let (cw, chh, credit) = shrink_4x(&credit, cw4, ch4, k);
+    let chh = chh.min(sh);
     let line_w = sw + cw;
     let mut line = vec![0u8; (line_w * sh * 4) as usize];
     for y in 0..sh {
@@ -317,21 +450,8 @@ unsafe fn add_title_credit(g: &mut dyn GLES, k: u32, w: u32, h: u32) {
         line[dst..dst + (sw * 4) as usize].copy_from_slice(&sheet[src..src + (sw * 4) as usize]);
     }
     for y in 0..chh {
-        for x in 0..cw {
-            let mut acc = [0u32; 4];
-            for yy in 0..f {
-                for xx in 0..f {
-                    let i = (((y * f + yy) * cw4 + x * f + xx) * 4) as usize;
-                    for c in 0..4 {
-                        acc[c] += credit[i + c] as u32;
-                    }
-                }
-            }
-            let i = ((y * line_w + sw + x) * 4) as usize;
-            for c in 0..4 {
-                line[i + c] = (acc[c] / (f * f)) as u8;
-            }
-        }
+        let (src, dst) = ((y * cw * 4) as usize, ((y * line_w + sw) * 4) as usize);
+        line[dst..dst + (cw * 4) as usize].copy_from_slice(&credit[src..src + (cw * 4) as usize]);
     }
     let (ax, ay) = (TITLE_LINE_AT.0 * k, TITLE_LINE_AT.1 * k);
     if ax + line_w > tw || ay + sh > th {
@@ -342,12 +462,66 @@ unsafe fn add_title_credit(g: &mut dyn GLES, k: u32, w: u32, h: u32) {
     TITLE_LINE_W.store(line_w / k, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A port-made picture (4x the game's size) at the sheet's scale `k` (1, 2
+/// or 4): as made, else box-filtered down. Returns (w, h, RGBA).
+fn shrink_4x(px: &[u8], w4: u32, h4: u32, k: u32) -> (u32, u32, Vec<u8>) {
+    let f = 4 / k.clamp(1, 4);
+    let (w, h) = (w4 / f, h4 / f);
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0u32; 4];
+            for yy in 0..f {
+                for xx in 0..f {
+                    let i = (((y * f + yy) * w4 + x * f + xx) * 4) as usize;
+                    for c in 0..4 {
+                        acc[c] += px[i + c] as u32;
+                    }
+                }
+            }
+            let i = ((y * w + x) * 4) as usize;
+            for c in 0..4 {
+                out[i + c] = (acc[c] / (f * f)) as u8;
+            }
+        }
+    }
+    (w, h, out)
+}
+
+/// "Press any key" (tools/make-title-press.ps1, 4x), for the title screen's
+/// "Tap": put in another empty area of the title sheet, under the copyright
+/// line; lyt.rs points the "Tap" part at it.
+const PRESS_PNG: &[u8] = include_bytes!("../assets/title_press.png");
+pub const PRESS_AT: (u32, u32) = (2, 398);
+/// Its size in game points, once it is on the sheet.
+static PRESS_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// (w, h) of "Press any key" on the title sheet, if it is there.
+pub fn press_size() -> Option<(u32, u32)> {
+    let v = PRESS_SIZE.load(std::sync::atomic::Ordering::Relaxed);
+    (v != 0).then(|| (v >> 16, v & 0xffff))
+}
+
+unsafe fn add_title_press(g: &mut dyn GLES, k: u32, w: u32, h: u32) {
+    let Ok((w4, h4, px)) = png_read(PRESS_PNG) else { return };
+    let (pw, ph, px) = shrink_4x(&px, w4, h4, k);
+    let (ax, ay) = (PRESS_AT.0 * k, PRESS_AT.1 * k);
+    if ax + pw > w * k || ay + ph > h * k {
+        return;
+    }
+    g.PixelStorei(gles11::UNPACK_ALIGNMENT, 1);
+    g.TexSubImage2D(gles11::TEXTURE_2D, 0, ax as _, ay as _, pw as _, ph as _, gles11::RGBA, gles11::UNSIGNED_BYTE, px.as_ptr() as *const _);
+    PRESS_SIZE.store((pw / k) << 16 | (ph / k), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// glDeleteTextures: the GL names are free for other textures (the game reuses
 /// them, for 3D models too); they must not keep the enlarged images' filtering,
 /// which needs mipmaps those textures don't have (they would draw white).
 pub fn on_delete(names: &[u32]) {
     for &n in names {
         forget_art(n);
+        forget_logo(n);
+        let _ = FONT_TEX.compare_exchange(n, 0, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
     }
     if let Some(st) = STATE.lock().unwrap().as_mut() {
         for n in names {
