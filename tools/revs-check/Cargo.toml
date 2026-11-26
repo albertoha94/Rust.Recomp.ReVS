@@ -1,6 +1,6 @@
 [package]
 name = "revs-check"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Checks recompiled functions against touchHLE's ARM CPU (dynarmic), using the user's own .ipa"
 
