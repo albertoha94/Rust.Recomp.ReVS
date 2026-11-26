@@ -52,7 +52,7 @@ has checked it yet: please report what you find.
 | Actions bar in menus (bottom left, in the game's font): Select, Back / Quit, Help, OK, with the controller's or the keyboard's buttons; game buttons under it move up | Tested (both schemes; the moved OK pressed) |
 | Slide-to-confirm bars pressed with A / Enter | Tested |
 | Two fingers at once (walk and aim together) | Tested |
-| Button badges overlay (shown while the controller is in use) | Badges tested |
+| Button badges overlay (menus and inventory, shown while the controller is in use) | Badges tested |
 | B / Esc on the main menu closes the game | Tested (Esc) |
 
 ### Menu changes
@@ -204,17 +204,24 @@ on touchHLE sees none).
 
 ## Controls
 
-The keys press the game's own touch buttons, so everything the touch screen does still works with the mouse.
+In menus the keys press the game's own touch buttons, so everything the touch screen does still works with the
+mouse. In a match the left mouse button fires instead of touching the screen.
 
-| Gameplay | Controller | Keyboard |
+| Gameplay | Controller | Keyboard / mouse |
 |---|---|---|
-| move / turn | left stick, D-pad | W A S D |
-| aim / fire | LT | Space, right mouse |
-| knife | LB | F |
-| contextual actions | A / B | Q / R |
-| inventory | X | E |
-| weapon icon | Y | Tab |
-| pause | Start | Esc |
+| move / turn | left stick | W A S D |
+| turn around | D-pad down | Shift + S |
+| dodge (while aiming) | D-pad, any direction | Shift + W / A / S / D |
+| dash (Wesker) | D-pad up | Shift + W |
+| aim | LT (held) | right mouse (on / off) |
+| fire (only while aiming) | RT | left mouse |
+| interact / pick up (prompt under the message: the game's icon and the key) | A | E |
+| reload | Y | R |
+| previous / next main weapon | LB / RB | mouse wheel up / down |
+| knife | right stick press | F |
+| inventory | X | Tab |
+| pause (single player only) | Start | Esc |
+| controls picture (on / off; follows the scheme in use) | View | F1, or click the game's "?" icon left of the pause button |
 
 | Menus (pause dialog too) | Controller | Keyboard |
 |---|---|---|
@@ -229,10 +236,12 @@ The keys press the game's own touch buttons, so everything the touch screen does
 
 | Inventory | Controller | Keyboard |
 |---|---|---|
-| focus over the items and commands | D-pad | arrows |
+| selection box over the items and commands (opens on the item in hand) | D-pad | arrows, W A S D |
 | press the focused button | A | Enter |
-| Equip / Give / Combine / Discard | Y / RB / X / LB | 1 / 2 / 3 / 4 |
+| Equip (Use) / Give / Combine / Discard | Y / RB / X / LB | 1 / 2 / 3 / 4 |
 | close | B | Esc, Backspace |
+
+The actions bar at the bottom left shows the inventory's commands that are available.
 
 Toggle full screen: **Alt+Enter**.
 

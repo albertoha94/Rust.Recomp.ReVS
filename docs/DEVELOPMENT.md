@@ -325,13 +325,119 @@ The layout follows the game's state: gameplay while `GM_CtrlLayout`+0x8c (input 
 
 | Gameplay | Controller | Keyboard | Touch (landscape points) |
 |---|---|---|---|
-| move / turn | left stick, D-pad | W A S D | stick, centre 73,247, radius 50 |
-| aim / fire | LT | Space, right mouse | 440,210 |
-| knife | LB | F | 405,280 |
-| contextual | A / B | Q / R | 371,210 / 441,140 |
-| inventory | X | E | 371,138 |
-| weapon icon | Y | Tab | 453,40 |
+| move / turn | left stick | W A S D (not with Shift) | stick, centre 73,247, radius 50 |
+| knife | right stick press | F | 405,280 |
+| inventory | X | Tab | 371,138 |
 | pause | Start | Esc | 156,18 |
+
+Aim, fire, interact and reload are not touches since gameplay update stage 1 (2026-11-25; `player.rs`,
+`input.rs` `gameplay_actions`). The HUD's buttons are read by `GM_CtrlLyt_Input` (a static object at 0x39299c):
+its handlers (`_HdlInput_GunBtn` 0x6beb0, `_KnifBtn`, `_EveBtn`, `_PostBtn`, `_ScopeBtn`, `_Pad`) OR a bit into
++0x24 on a press and +0x28 while held; `Clear_Press` empties them, and the player's states read them
+(`_State_Move` 0x148fac reads +0x24 directly). The port ORs the same bits in at the start of the player's step
+(`GM_CtrlMain_Player::Main_Mission` 0x14d86c, hooked; earlier the HUD's frame clears them first):
+
+| Bit | HUD source | What the player does |
+|---|---|---|
+| 0x80 | gun button | aim; while aiming, fire |
+| 0x10 | "Post" (shown while aiming; the attaché case and quick equip send it too) | lower the gun |
+| 0x20 | event button | interact |
+| 0x100 | knife button | knife |
+| 0x200 | scope button | scope |
+| 0x1 / 0x2 / 0x4 / 0x8 | stick press (direction) | |
+| 0x3000 | stick tap | reload (`Set_AC_Reload`, `_State_StandReload`); `_State_Move` tests 0x1000 |
+| 0x4000 / 0x8000 / 0x10000 / 0x20000 | stick double flick, directions 1-4 | 0x8000: turn around; 0x4000: Wesker's dash (state 37, `_State_Dash`; tested only when the character check is 2); 0x10000 / 0x20000: dodge left / right while aiming (`_State_AtkAimM` 0x1482f8 tests all four; nothing seen standing) |
+
+The player's state comes from `GM_CtrlMain_Player::_Change_State(this, state)` (0x13b5c8, hooked): 0 move,
+1 raise the gun (`_State_AtkAimS`), 2 aim (`_State_AtkAimM`), 6 fire (`_State_AtkMain`), 3 lower
+(`_State_AtkAimE`), 8 reload (`_State_StandReload`), 9 / 11 hit (`_State_Damage` / `_State_Down`), 28 a movement
+(`_State_MvtPlay`, the turn), 13-18 weapon switches (drawing the knife ends in state 2 with the knife ready).
+REVS_PLAYERLOG=1 prints the states, the handlers and the bits sent. Keyboard and mouse: right mouse sends 0x80
+when not aiming, else 0x10; left mouse sends 0x80 only in states 2 / 6 (held: 0x80 in +0x28 too), and in a match
+touches nothing; E 0x20; R 0x3000. Controller: LT down 0x80, up 0x10; RT like the left mouse; A 0x20; Y 0x3000.
+Checked by script in Training: left click ignored before aiming, right click aims, two left clicks fire two
+shots, right click lowers the gun, left click ignored again, R reloads, Tab opens and Esc closes the inventory,
+E sends 0x20, F draws the knife. The controller side is not tested (no scripted pad); E with something to
+interact with is checked in stage 4.
+
+Stage 2 (2026-11-25): the D-pad and Shift + W / S / A / D send the double flicks (forward 0x4000, back 0x8000,
+left 0x10000, right 0x20000; `player::FLICK_*`) on a press. The D-pad no longer walks, and W A S D don't walk
+while either Shift is down. Checked by script in Training: aiming with Chris, Shift+A dodges left and Shift+D
+right (state 28, then back to aiming), Shift+S turns around; with Wesker (character screen: P1 portrait, right
+arrow twice), Shift+W dashes (state 37) standing and after a right click. The D-pad is not tested (no scripted
+pad).
+
+Stage 3 (2026-11-25), weapon swap: LB / wheel up takes out the previous main weapon, RB / wheel down the next
+(`player::swap`, `Input::Wheel`; `--key=F1-F2:Wheel Up` / `Wheel Down` script one notch). `GM_CtrlParam` (0x392288)
+is also the player's attaché case (`BioVS_GameAttacheCase`): 10 `Bio4_ItemNode` slots of 0x2c bytes from +4 (prev,
+next, item, count), +0x1c4 the slot of the gun in hand and +0x1c8 the knife's (`GetEqpWeapon` 0x10f828). An item
+(0x14-byte entry) has +0xc the type (0 weapon) and +0xd the weapon kind; grenades have +0xe 1. Main weapons: type 0,
++0xe 0, not the knife slot, i.e. Chris handgun / shotgun, Jill handgun / machine gun, Wesker handgun / magnum /
+shotgun (case order). The quick-equip ring (`GM_CtrlLyt_QuickEqp::Frame`) equips with
+`GM_CtrlMain_Player::Equip(player, slot)` (0x13b454), which only stores the slot in player +0x15c when that is -2
+(none waiting) and the player isn't dying; the port writes +0x15c the same way at `Main_Mission`, in states 0 and
+2 only. The player then runs state 32 (`_State_Obj_Equip`). Checked by script with Wesker: wheel down three times
+cycles handgun, magnum, shotgun, handgun (HUD icon and count follow); wheel up goes back; while aiming the swap
+works and ends with the gun down. With grenades in hand, either direction takes out the first main weapon (the
+starting handgun; checked with Chris). Chris and Jill checked by the user. LB / RB not tested (no scripted pad).
+
+Stage 4 (2026-11-25), interact prompt (`lyt.rs` `event_prompt`, `actions::prompt`): the touch buttons stay
+invisible (alpha 0, "Icon Transparency"), but while the action message window (`MesWinAct`, the grey bar with
+"Examine", "Take"...; 232 x 33 at 124,125) is up, the event button's picture (`ActBtn_Event` > `Img`; the game sets
+its sheet area for the action, `Set_EveBtn`) gets alpha 255 and no tint (the game greys it: +0xac 6b6b6bff; its
+`Effect` glow is ffffffff) and is drawn 40 x 40 right under the bar (its disc is about 32; under the lowest shown
+piece of the lowest shown message window: `MesWinAct` for one-line prompts, `MesWinItm` for "Pick up ...?" with
+the item's picture, 232 x 101 at 124,91, found from a log taken in play), centred together with
+the port's E key cap / (A) disc on its right (actions bar style scaled to 30 points, `Ui::scaled`; by the scheme in
+use). Up only while the step has an event (`main::event_now`, the byte `GM_MisConduct::Draw` reads) as well as the
+window and the button shown: `MesWinAct` stays visible after an interaction, which left the key on screen.
+Otherwise the icon goes back to its place, alpha 0. `REVS_LYT=2` now prints each part's alpha (+0x4c);
+`REVS_FORCE_EVENT=N:F` forces the event until frame F only. Checked by script with `REVS_FORCE_EVENT=1:1620`
+(Examine: "!" and E, then nothing) and by the user in play (Open). The controller look is not tested.
+
+Stage 5 (2026-11-25), inventory (`input.rs` `inventory_focus`, `inventory_acts`; `player.rs`): the grid
+(`BtnIconItem`, by row) is the case's items without the knife, in slot order; `GM_CtrlLyt_AC::SelectItem(this, n)`
+(0x953ac, hooked) gets that grid index (-1 none). The selection box: on opening, the item in hand
+(`player::equipped_grid_index`, from case +0x1c4: the game's "E"); when an item is selected (its commands come on)
+the first command on except Discard (before, the "top button" rule took it to the next item, and two Enters could
+discard); when the commands go off, back to the item it was on. W A S D move it too. The actions bar shows Select,
+Back and the commands on: Equip, or Use for an item that isn't a weapon (item type +0xc not 0), Give, Combine,
+Discard, with Y / RB / X / LB or 1-4 (`Act::Equip`... ; RB / LB as single pills). Checked by script: with the
+shotgun in hand the box opens on it; Enter selects it and only Discard is on (the box stays off it); D D S walks
+handgun, shotgun, grenades, spray; selecting the spray shows "Use" (off at full health), the box goes to Combine and
+the bar shows 3 Combine, 4 Discard. Esc closes the inventory (the game's back). The controller look is not tested.
+
+Stage 6 (2026-11-25), controls picture (`controls.rs`): in a match F1 / View turns on and off a panel (first 400 x 256 at
+40,26) showing the scheme in use (notice.rs): "Keyboard and mouse" (a few keys of a keyboard, the used ones lit, and
+a mouse with both buttons and the wheel lit) or "Controller" (a controller outline, its buttons lit), then two
+columns with every gameplay action and its key caps / buttons in the actions bar's style (`actions::keycap`,
+`pad_prompt`, now `pub(crate)`). All port shapes, no game pictures. It fades in and out in 0.2 s and crossfades when
+the scheme changes while it is up (one opacity per scheme; the plate takes the larger); `Ui::faded` multiplies a
+shape's opacity. It hides when gameplay ends (pause, inventory, menus). Checked by script: F1 shows the keyboard
+picture, F1 again hides it, the opacity steps from 0 to 1 over 0.2 s (logged), and with the scheme forced to the
+controller (a temporary switch, removed) the two pictures crossfade into the controller one. A real controller is
+not tested.
+
+Stage 6 revision (2026-11-25): a help icon sits left of the pause button (`BtnPause`, [133, -4, 46, 46], centre
+156,19, a disc about 34 points across) during gameplay: the game's own "?" (the menus' `BtnHelp` picture, src
+[192, 0, 64, 64] on the action icon sheet `10cd8e16b58af475`, 512 x 512, which also holds the HUD's event button
+pictures, so it is uploaded in matches too). textures.rs keeps that sheet's GL name (`icon_tex`, like the menu font)
+and `Ui::Icon` draws a part of it; the cell is drawn 45 points wide centred on 118,19 (its disc fills 50 of 64
+texels), as big as the pause disc. Under each disc, centred at y 45, the key / button that does the same: F1 / View
+under "?", Esc / Menu under pause (only while the game shows `BtnPause`; the controller overlay's "ST" badge for
+pause is gone); a left click on it toggles the
+picture instead of firing (`controls::on_help`; the release after it doesn't fire either). The OS cursor is shown
+in gameplay, so it can be aimed at. The panel is now 400 x 282 at 40,30 with 19-point rows, so the left column fits
+8 rows. Texts: Shift + S "180 Turn", Shift + W "Dash (Wesker only)", Shift + WASD "While aiming - Dodge" (any direction), right
+mouse "Aim (Toggle On/Off)", left mouse "While aiming - Fire", "Interact / Pick up", "Pause (Single Player Only)";
+mouse rows show a small mouse with that button lit. Controller: an Xbox-style outline (13 points per half,
+mirrored, smoothed with Catmull-Rom; its rim is the outline pushed out along each corner's normal, `grow`), bumpers
+and triggers, left stick top left, D-pad and right stick below, face buttons in their colours, guide, View and
+Menu; its rows are centred in an 18-point slot so they line up, with stick caps (L / R), the D-pad with the used
+arm lit, and a View icon (two windows from rectangles, so it fades). Left column: L Move, D-pad down / up / all four, LT Aim (Hold), R Knife, View Controls, Menu Pause; right: LB, RB, RT, A, Y, X. The controller overlay's
+badges on the HUD's touch buttons (LS, LT, A, X, RS, ST) are gone in gameplay; the picture and the prompts under
+the help and pause icons show the buttons (menus and the inventory keep theirs). Checked by script: both pictures and the icon (controller with the scheme
+forced by a temporary switch, removed); the mouse click on the icon is not scripted (no positional click).
 
 | Menus (pause dialog too) | Controller | Keyboard | Touch |
 |---|---|---|---|
@@ -347,7 +453,7 @@ The layout follows the game's state: gameplay while `GM_CtrlLayout`+0x8c (input 
 
 | Inventory | Controller | Keyboard | Touch |
 |---|---|---|---|
-| focus over the item grid and the four commands | D-pad | arrows | - |
+| focus over the item grid and the four commands | D-pad | arrows, W A S D | - |
 | press the focused button | A | Enter | its centre |
 | Equip (Use) / Give / Combine / Discard | Y / RB / X / LB | 1 / 2 / 3 / 4 | BtnSel1-4 centre (when enabled) |
 | close | B | Esc, Backspace | BtnBack |
@@ -379,8 +485,8 @@ class = vtable slot 12 `doMsgProc`: Button 0x42b4c, PushButton 0x59f64, ActionBu
     first time each string is read (same length; `cargo test -p revs-run tweaks`).
 - Focus: D-pad / arrows step to the nearest enabled button ahead (distance ahead + 2 x sideways), repeat after
   0.4 s then every 0.15 s. (2026-11-24: see "Menu pointer and selection box" below.)
-- Overlay: coloured badges (A green, B red, X blue, Y yellow, others grey) at each mapped point: HUD buttons in
-  gameplay, Equip/Give/Combine/Discard and the back button in the inventory, Cancel in menus (the hidden back
+- Overlay: coloured badges (A green, B red, X blue, Y yellow, others grey) at each mapped point (none in gameplay since
+  gameplay stage 6): Equip/Give/Combine/Discard and the back button in the inventory, Cancel in menus (the hidden back
   button's B is on the actions bar since UI stage 2).
   Shown while the controller is the scheme in use (`REVS_OVERLAY=1` forces it for screenshots). (Until
   2026-11-24 holding View toggled it; View is now help.)
@@ -511,7 +617,8 @@ those setters (`STEP_ONLY` in `main.rs`), so they draw the same HUD and the prom
 already blended holder (held weapons, the laser dot) are drawn as they come, not blended again. Checked in
 Training and a two-window Local Match, and played by hand (prompts, weapons, message window). Test overrides:
 `REVS_EXTRA_RENDER=N` (in-between frames), `REVS_INTERP=0/1/2` (off / delay / predict: no added delay, a little
-overshoot when something stops or turns), `REVS_FORCE_EVENT=N` (every step sees event N, e.g. 1 = "Examine").
+overshoot when something stops or turns), `REVS_FORCE_EVENT=N` (every step sees event N, e.g. 1 = "Examine";
+`N:F` until frame F).
 
 Full screen (2026-11-21): the game starts full screen (borderless, at the desktop's resolution) and **Alt+Enter**
 switches between full screen and a window; the window can also be resized. The picture keeps its 3:2 shape, with

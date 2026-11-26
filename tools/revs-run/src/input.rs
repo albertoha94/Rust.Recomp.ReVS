@@ -3,8 +3,12 @@
 //! setup. Points are landscape game points (480 x 320, as the player sees it).
 //!
 //! Three layouts, picked from the game's own state:
-//! - gameplay (`in_match`): the left stick / D-pad / WASD drive the virtual
-//!   stick; LT, LB, A, B, X, Y and Start (or keys) hold fingers on the HUD.
+//! - gameplay (`in_match`): the left stick / WASD drive the virtual stick;
+//!   the knife, inventory and pause buttons (or keys) hold fingers on the
+//!   HUD; aim, fire, interact, reload and the D-pad / Shift+WASD gestures
+//!   (turn, dodge, dash) are the game's own input bits (`gameplay_actions`,
+//!   player.rs), and the left mouse button fires; F1 / View show the
+//!   controls picture (controls.rs).
 //! - inventory (in a match, the inventory layout `Sub_lytAC` on screen):
 //!   D-pad / arrows move a focus rectangle over its buttons, A / Enter press
 //!   the focused one, Y / RB / X / LB (1-4) press Equip / Give / Combine /
@@ -24,7 +28,8 @@
 //! lifts every finger.
 //!
 //! Overlay: while the controller is the control scheme in use (notice.rs),
-//! badges show which pad button touches where.
+//! badges show which pad button touches where in menus and the inventory
+//! (none in gameplay: the controls picture shows the buttons).
 
 use crate::colorui;
 use crate::gfx::{Badge, Ui};
@@ -59,44 +64,38 @@ struct Bind {
     /// Pressed while this trigger is past half way.
     trigger: Option<Axis>,
     keys: &'static [K],
-    /// Also pressed by the right mouse button.
-    right_mouse: bool,
     at: (f32, f32),
 }
 
 const fn b(pad: &'static [Button], keys: &'static [K], x: f32, y: f32) -> Bind {
-    Bind { pad, trigger: None, keys, right_mouse: false, at: (x, y) }
+    Bind { pad, trigger: None, keys, at: (x, y) }
 }
 
-/// Gameplay HUD (the user's touchHLE `--button-to-touch` points).
+/// Gameplay HUD buttons pressed by touch (the user's touchHLE
+/// `--button-to-touch` points). Aim, fire, interact and reload are the game's
+/// own input bits instead (player.rs, `gameplay_actions`).
 const GAMEPLAY: &[Bind] = &[
-    // LT: aim the gun / fire.
-    Bind { pad: &[], trigger: Some(Axis::TriggerLeft), keys: &[K::Space], right_mouse: true, at: (440.0, 210.0) },
-    b(&[Button::LeftShoulder], &[K::F], 405.0, 280.0), // knife
-    b(&[Button::A], &[K::Q], 371.0, 210.0),
-    b(&[Button::B], &[K::R], 441.0, 140.0),
-    b(&[Button::X], &[K::E], 371.0, 138.0), // inventory
-    b(&[Button::Y], &[K::Tab], 453.0, 40.0), // weapon icon
-    b(&[Button::Start], &[K::Escape], 156.0, 18.0), // pause
+    b(&[Button::RightStick], &[K::F], 405.0, 280.0), // knife
+    b(&[Button::X], &[K::Tab], 371.0, 138.0),        // inventory (attache case)
+    b(&[Button::Start], &[K::Escape], 156.0, 18.0),  // pause
 ];
-/// Overlay badge of each GAMEPLAY entry.
-const GAMEPLAY_LABELS: [&str; 7] = ["LT", "LB", "A", "B", "X", "Y", "ST"];
 
 /// Menus (the user's touchHLE `--menu-button-to-touch` points). A and B are
 /// handled apart (the focused button, the back button).
 const MENU: &[Bind] = &[
-    Bind { pad: &[Button::Start], trigger: None, keys: &[], right_mouse: false, at: (240.0, 300.0) },
+    Bind { pad: &[Button::Start], trigger: None, keys: &[], at: (240.0, 300.0) },
     b(&[Button::Y], &[K::Num1], 39.0, 141.0),
     b(&[Button::LeftShoulder], &[K::Num2], 39.0, 211.0),
-    Bind { pad: &[], trigger: Some(Axis::TriggerLeft), keys: &[K::Num3], right_mouse: false, at: (441.0, 141.0) },
+    Bind { pad: &[], trigger: Some(Axis::TriggerLeft), keys: &[K::Num3], at: (441.0, 141.0) },
     b(&[Button::RightShoulder], &[K::Num4], 441.0, 211.0),
-    Bind { pad: &[], trigger: Some(Axis::TriggerRight), keys: &[K::Num5], right_mouse: false, at: (441.0, 281.0) },
+    Bind { pad: &[], trigger: Some(Axis::TriggerRight), keys: &[K::Num5], at: (441.0, 281.0) },
 ];
 
 /// Menu swipe on X (touchHLE `--menu-button-to-swipe=X,147,228,353,228`).
 const SWIPE: ((f32, f32), (f32, f32)) = ((147.0, 228.0), (353.0, 228.0));
 
-/// Inventory buttons: pad, key, the game's button, badge label.
+/// Inventory buttons: pad, key, the game's button, badge label (their
+/// actions bar entries: `inventory_acts`).
 const INVENTORY: [(Button, K, &str, &str); 4] = [
     (Button::Y, K::Num1, "BtnSel1", "Y"),              // Equip
     (Button::RightShoulder, K::Num2, "BtnSel2", "RB"), // Give
@@ -126,6 +125,26 @@ struct State {
     lt: f32,
     rt: f32,
     right_mouse: bool,
+    /// The left mouse button, in gameplay (fire; it touches nothing there).
+    left_mouse: bool,
+    /// The left button went down on the help icon (until it is up).
+    help_click: bool,
+    /// Gameplay gestures down last pass (forward, back, left, right).
+    flick_held: [bool; 4],
+    /// Gameplay actions down last pass: aim toggle, LT, fire, interact, reload.
+    aim_held: bool,
+    lt_held: bool,
+    fire_held: bool,
+    event_held: bool,
+    reload_held: bool,
+    /// F1 / View down last pass in gameplay (the controls picture).
+    controls_held: bool,
+    /// The inventory item the selection box was last on (its centre).
+    inv_item: Option<(f32, f32)>,
+    /// LB / RB down last pass (weapon swap).
+    swap_held: [bool; 2],
+    /// Wheel notches since the last pass (positive: away from the user).
+    wheel: i32,
     /// The layout in use.
     screen: Option<Screen>,
     /// Menu pointer (landscape points), and whether it moved this pass.
@@ -161,11 +180,23 @@ struct State {
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
+/// A scripted key or mouse button.
+#[derive(Clone, Copy)]
+enum Scripted {
+    Key(K),
+    MouseLeft,
+    MouseRight,
+    /// One wheel notch (+1 up, away from the user; -1 down).
+    Wheel(i32),
+}
+
 /// Scripted keys (`--key=F1-F2:NAME`): (frame, key, down), in frame order.
-static KEY_SCRIPT: Mutex<Vec<(u64, K, bool)>> = Mutex::new(Vec::new());
+static KEY_SCRIPT: Mutex<Vec<(u64, Scripted, bool)>> = Mutex::new(Vec::new());
 
 /// Parses `--key=F1-F2:NAME` (SDL key names: W, Space, Return, Left Shift,
-/// Escape, Up, ...): the key is held from presented frame F1 to F2.
+/// Escape, Up, ...; or Mouse Left / Mouse Right): the key is held from
+/// presented frame F1 to F2. A scripted left button is the gameplay one only
+/// (it touches nothing). Wheel Up / Wheel Down turn the wheel one notch at F1.
 pub fn parse_keys(args: &[String]) {
     let mut v = Vec::new();
     for a in args {
@@ -173,7 +204,14 @@ pub fn parse_keys(args: &[String]) {
         let Some((frames, name)) = r.split_once(':') else { continue };
         let Some((f1, f2)) = frames.split_once('-') else { continue };
         let (Ok(f1), Ok(f2)) = (f1.parse::<u64>(), f2.parse::<u64>()) else { continue };
-        match K::from_name(name) {
+        let key = match name {
+            "Mouse Left" => Some(Scripted::MouseLeft),
+            "Mouse Right" => Some(Scripted::MouseRight),
+            "Wheel Up" => Some(Scripted::Wheel(1)),
+            "Wheel Down" => Some(Scripted::Wheel(-1)),
+            _ => K::from_name(name).map(Scripted::Key),
+        };
+        match key {
             Some(k) => {
                 v.push((f1, k, true));
                 v.push((f2.max(f1 + 1), k, false));
@@ -188,8 +226,76 @@ pub fn parse_keys(args: &[String]) {
 fn bind_down(s: &State, bd: &Bind) -> bool {
     bd.pad.iter().any(|p| s.pad.contains(p))
         || bd.trigger.is_some_and(|t| if t == Axis::TriggerLeft { s.lt } else { s.rt } > 0.5)
-        || (bd.right_mouse && s.right_mouse)
         || bd.keys.iter().any(|k| s.keys.contains(k))
+}
+
+/// A press: down now, not on the last pass.
+fn pressed(held: &mut bool, down: bool) -> bool {
+    let p = down && !*held;
+    *held = down;
+    p
+}
+
+/// Gameplay actions taken as the game's own HUD input bits (player.rs), by
+/// the player's state:
+/// - right mouse: aim on / off (the gun button, or "Post" that lowers it);
+///   LT: aim while held;
+/// - left mouse / RT: fire, only while aiming (held: kept down, for
+///   automatic weapons);
+/// - E / A: interact; R / Y: reload (a tap on the move stick);
+/// - D-pad / Shift + W A S D: the move stick's double flicks: back turns
+///   around, forward is Wesker's dash, left / right dodge while aiming;
+/// - LB / wheel up: previous main weapon; RB / wheel down: next.
+fn gameplay_actions(s: &mut State) {
+    use crate::player;
+    let prev = pressed(&mut s.swap_held[0], s.pad.contains(&Button::LeftShoulder));
+    let next = pressed(&mut s.swap_held[1], s.pad.contains(&Button::RightShoulder));
+    let wheel = std::mem::take(&mut s.wheel);
+    if prev || wheel > 0 {
+        player::swap(-1);
+    } else if next || wheel < 0 {
+        player::swap(1);
+    }
+    let aiming = player::aiming();
+    let mut bits = 0;
+    let flicks = [
+        (Button::DPadUp, K::W, player::FLICK_FORWARD),
+        (Button::DPadDown, K::S, player::FLICK_BACK),
+        (Button::DPadLeft, K::A, player::FLICK_LEFT),
+        (Button::DPadRight, K::D, player::FLICK_RIGHT),
+    ];
+    for (i, (pad, key, bit)) in flicks.into_iter().enumerate() {
+        let down = s.pad.contains(&pad) || (shift(s) && s.keys.contains(&key));
+        if pressed(&mut s.flick_held[i], down) {
+            bits |= bit;
+        }
+    }
+    if pressed(&mut s.aim_held, s.right_mouse) {
+        bits |= if aiming { player::POST } else { player::GUN };
+    }
+    let lt = s.lt > 0.5;
+    if lt != s.lt_held {
+        if lt && !aiming {
+            bits |= player::GUN;
+        } else if !lt && aiming {
+            bits |= player::POST;
+        }
+        s.lt_held = lt;
+    }
+    let fire = s.left_mouse || s.rt > 0.5;
+    if pressed(&mut s.fire_held, fire) && player::can_fire() {
+        bits |= player::GUN;
+    }
+    player::hold(if fire && player::can_fire() { player::GUN } else { 0 });
+    if pressed(&mut s.event_held, s.keys.contains(&K::E) || s.pad.contains(&Button::A)) {
+        bits |= player::EVENT;
+    }
+    if pressed(&mut s.reload_held, s.keys.contains(&K::R) || s.pad.contains(&Button::Y)) {
+        bits |= player::RELOAD;
+    }
+    if bits != 0 {
+        player::trigger(bits);
+    }
 }
 
 /// The left stick past the dead zone, else (0, 0).
@@ -208,11 +314,17 @@ fn dead_zone((sx, sy): (f32, f32)) -> (f32, f32) {
     }
 }
 
-/// Direction from the D-pad or the given keys (up, left, down, right), else the stick.
+/// Shift is down (either one): W A S D are gestures, not moves.
+fn shift(s: &State) -> bool {
+    s.keys.contains(&K::LShift) || s.keys.contains(&K::RShift)
+}
+
+/// The walking direction: the given keys (up, left, down, right; not with
+/// Shift), else the left stick. The D-pad doesn't walk (gestures).
 fn direction(s: &State, keys: [K; 4]) -> (f32, f32) {
-    let on = |b: Button, k: K| s.pad.contains(&b) || s.keys.contains(&k);
-    let x = on(Button::DPadRight, keys[3]) as i32 - on(Button::DPadLeft, keys[1]) as i32;
-    let y = on(Button::DPadDown, keys[2]) as i32 - on(Button::DPadUp, keys[0]) as i32;
+    let on = |k: K| !shift(s) && s.keys.contains(&k);
+    let x = on(keys[3]) as i32 - on(keys[1]) as i32;
+    let y = on(keys[2]) as i32 - on(keys[0]) as i32;
     if x != 0 || y != 0 {
         let l = ((x * x + y * y) as f32).sqrt();
         return (x as f32 / l, y as f32 / l);
@@ -221,12 +333,51 @@ fn direction(s: &State, keys: [K; 4]) -> (f32, f32) {
 }
 
 /// The D-pad or arrow keys as a direction (-1, 0, 1 each).
-fn dpad(s: &State) -> (i32, i32) {
-    let on = |b: Button, k: K| s.pad.contains(&b) || s.keys.contains(&k);
+/// With `wasd` (the inventory) W A S D too.
+fn dpad(s: &State, wasd: bool) -> (i32, i32) {
+    let on = |b: Button, k: K, w: K| s.pad.contains(&b) || s.keys.contains(&k) || (wasd && s.keys.contains(&w));
     (
-        on(Button::DPadRight, K::Right) as i32 - on(Button::DPadLeft, K::Left) as i32,
-        on(Button::DPadDown, K::Down) as i32 - on(Button::DPadUp, K::Up) as i32,
+        on(Button::DPadRight, K::Right, K::D) as i32 - on(Button::DPadLeft, K::Left, K::A) as i32,
+        on(Button::DPadDown, K::Down, K::S) as i32 - on(Button::DPadUp, K::Up, K::W) as i32,
     )
+}
+
+/// The inventory's item buttons (its grid), in the game's order (by row).
+fn inventory_items<'a>(list: &[&'a Btn]) -> Vec<&'a Btn> {
+    let mut items: Vec<&Btn> = list.iter().copied().filter(|b| b.name == "BtnIconItem").collect();
+    items.sort_by(|a, b| (a.rect[1], a.rect[0]).partial_cmp(&(b.rect[1], b.rect[0])).unwrap_or(std::cmp::Ordering::Equal));
+    items
+}
+
+/// Where the inventory's selection box goes when its buttons change:
+/// - just opened: the item in hand (the game marks it "E");
+/// - an item was selected (its commands came on): the first command, but
+///   not Discard (Enter twice must not throw the item away): with only
+///   Discard on it stays on the items;
+/// - the commands went off (done or cancelled): back to the item it was on.
+fn inventory_focus<'a>(h: &Host, list: &[&'a Btn], opened: bool, last_item: Option<(f32, f32)>) -> Option<&'a Btn> {
+    if opened {
+        let items = inventory_items(list);
+        return crate::player::equipped_grid_index(h).and_then(|i| items.get(i).copied()).or_else(|| top(list));
+    }
+    let first_cmd = INVENTORY.iter().filter(|e| e.2 != "BtnSel4").find_map(|e| list.iter().copied().find(|b| b.name == e.2));
+    first_cmd.or_else(|| last_item.and_then(|p| nearest(&inventory_items(list), p))).or_else(|| top(list))
+}
+
+/// The inventory's actions bar: select, back, and its commands that are on.
+fn inventory_acts(h: &Host, btns: &[Btn]) -> Vec<crate::actions::Act> {
+    use crate::actions::Act;
+    let mut acts = vec![Act::Select, Act::Back];
+    let on = |name: &str| btns.iter().any(|b| b.name == name && b.root == INVENTORY_ROOT && b.enabled);
+    if on("BtnSel1") {
+        acts.push(if crate::player::selected_is_usable(h) { Act::Use } else { Act::Equip });
+    }
+    for (name, act) in [("BtnSel2", Act::Give), ("BtnSel3", Act::Combine), ("BtnSel4", Act::Discard)] {
+        if on(name) {
+            acts.push(act);
+        }
+    }
+    acts
 }
 
 /// `GM_CtrlLayout` (a static object) +0x8c: the player's input is on. The
@@ -381,7 +532,9 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
     s.pointer_moved = false;
     for e in events {
         match &e {
-            Input::Mouse(..) | Input::Hover(..) | Input::RightMouse(_) | Input::Key(..) => notice::used(Scheme::Keyboard, now),
+            Input::Mouse(..) | Input::Hover(..) | Input::RightMouse(_) | Input::Wheel(_) | Input::Key(..) => {
+                notice::used(Scheme::Keyboard, now)
+            }
             Input::Pad(..) => notice::used(Scheme::Controller, now),
             Input::Axis(a, v) => {
                 let trigger = matches!(a, Axis::TriggerLeft | Axis::TriggerRight);
@@ -404,6 +557,21 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
                     notice::disconnected(left, now);
                 }
             }
+            // In gameplay the left button fires (gameplay_actions); it touches
+            // nothing. A press on the help icon opens the controls picture
+            // instead (and doesn't fire until the button is up again).
+            Input::Mouse(p, x, y) if s.screen == Some(Screen::Gameplay) => {
+                let on_help = touch::window_to_landscape(h, x, y).is_some_and(crate::controls::on_help);
+                if p == 0 && on_help {
+                    crate::controls::toggle();
+                    s.help_click = true;
+                } else if !s.help_click {
+                    s.left_mouse = p != 3;
+                }
+                if p == 3 {
+                    s.help_click = false;
+                }
+            }
             Input::Mouse(p, x, y) => {
                 if let Some(at) = touch::window_to_landscape(h, x, y) {
                     s.pointer = at;
@@ -422,6 +590,7 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
                 }
             }
             Input::RightMouse(d) => s.right_mouse = d,
+            Input::Wheel(n) => s.wheel += n,
             Input::Key(k, true, _) => {
                 s.keys.insert(k);
             }
@@ -463,10 +632,17 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
             }
             ks.remove(0);
             notice::used(Scheme::Keyboard, h.ui.now());
-            if down {
-                s.keys.insert(k);
-            } else {
-                s.keys.remove(&k);
+            match (k, down) {
+                (Scripted::Key(k), true) => {
+                    s.keys.insert(k);
+                }
+                (Scripted::Key(k), false) => {
+                    s.keys.remove(&k);
+                }
+                (Scripted::MouseLeft, d) => s.left_mouse = d,
+                (Scripted::MouseRight, d) => s.right_mouse = d,
+                (Scripted::Wheel(n), true) => s.wheel += n,
+                (Scripted::Wheel(_), false) => {}
             }
         }
     }
@@ -484,6 +660,7 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
     // The port's colour menus (lobby chips, the character select bar).
     let port_ui = colorui::frame(h, &btns, screen == Screen::Menu);
     btns.extend(colorui::buttons());
+    let inventory_opened = screen == Screen::Inventory && s.screen != Some(Screen::Inventory);
     if s.screen != Some(screen) {
         if s.screen.is_some() {
             lift_all(h, c);
@@ -514,10 +691,18 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         for (i, bd) in GAMEPLAY.iter().enumerate() {
             let down = bind_down(s, bd);
             hold(h, c, FIRST + i, down, bd.at);
-            badges.push(badge((bd.at.0 - 18.0, bd.at.1 - 18.0), GAMEPLAY_LABELS[i]));
         }
-        badges.push(badge((STICK_CENTRE.0 - 30.0, STICK_CENTRE.1 - 30.0), "LS"));
+        // No badges on the HUD's touch buttons: the controls picture (F1 /
+        // View) and the prompts under the help and pause icons show the
+        // buttons instead.
+        gameplay_actions(s);
+        // F1 / View: the controls picture on / off (controls.rs).
+        if pressed(&mut s.controls_held, s.pad.contains(&Button::Back) || s.keys.contains(&K::F1)) {
+            crate::controls::toggle();
+        }
     } else {
+        crate::controls::hide();
+        s.controls_held = true;
         // The pointer: the mouse (above) or either stick.
         let (lx, ly) = stick(s);
         let (rx, ry) = dead_zone(s.rstick);
@@ -532,14 +717,20 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         // moves over.
         let list = focusable(&btns, screen);
         let sig = signature(&list);
-        let mut cur = if sig != s.screen_sig { top(&list) } else { s.focus.and_then(|f| resolve(&list, f)) };
+        let mut cur = if screen == Screen::Inventory && (inventory_opened || sig != s.screen_sig) {
+            inventory_focus(h, &list, inventory_opened, s.inv_item)
+        } else if sig != s.screen_sig {
+            top(&list)
+        } else {
+            s.focus.and_then(|f| resolve(&list, f))
+        };
         s.screen_sig = sig;
         if s.pointer_moved {
             if let Some(b) = list.iter().copied().find(|b| b.contains(s.pointer)) {
                 cur = Some(b);
             }
         }
-        let nav = dpad(s);
+        let nav = dpad(s, screen == Screen::Inventory);
         if nav != (0, 0) && (nav != s.nav || now >= s.nav_next) {
             s.nav_next = now + if nav != s.nav { NAV_DELAY } else { NAV_REPEAT };
             if cur.is_some_and(|b| b.name == colorui::BAR_NAME) && nav.0 != 0 && nav.1 == 0 {
@@ -554,6 +745,9 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         }
         s.nav = nav;
         s.focus = cur.map(|b| b.centre());
+        if let Some(b) = cur.filter(|b| b.name == "BtnIconItem") {
+            s.inv_item = Some(b.centre());
+        }
         let focused = cur.cloned();
         // LB / RB (Q / E) on a lobby portrait: that player's colour, one per press.
         let portrait = focused.as_ref().and_then(|b| colorui::portrait_slot(&b.name));
@@ -649,6 +843,7 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
         }
 
         if screen == Screen::Inventory {
+            acts = inventory_acts(h, &btns);
             for (i, &(pad, key, name, label)) in INVENTORY.iter().enumerate() {
                 let target = btns.iter().find(|b| b.name == name && b.root == INVENTORY_ROOT);
                 let down = s.pad.contains(&pad) || s.keys.contains(&key);
@@ -682,8 +877,9 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
 
     let pads = h.gfx.as_ref().map_or(0, |g| g.window.pad_count());
     // The overlay: while the controller is in use. REVS_OVERLAY=1 shows it
-    // anyway (for test screenshots).
-    let show_badges = notice::scheme(pads) == Scheme::Controller || std::env::var_os("REVS_OVERLAY").is_some();
+    // anyway (for test screenshots). Never over the controls picture.
+    let show_badges = (notice::scheme(pads) == Scheme::Controller || std::env::var_os("REVS_OVERLAY").is_some())
+        && !crate::controls::visible();
     let menu = screen != Screen::Gameplay;
     let shown = menu.then_some(s.pointer);
     let mut port_ui = port_ui;
@@ -694,8 +890,18 @@ pub fn pump(h: &mut Host, c: &mut Cpu, events: Vec<Input>) {
     }
     port_ui.extend(notice::frame(now, pads));
     let scheme = notice::scheme(pads);
+    if !menu {
+        let pause = btns.iter().any(|b| b.name == "BtnPause" && b.enabled);
+        port_ui.extend(crate::controls::help_icon(scheme, pause));
+    }
+    port_ui.extend(crate::controls::frame(now, scheme));
     port_ui.extend(crate::actions::frame(scheme, &acts));
     lyt::keep_clear(crate::actions::rect(scheme, &acts));
+    // Interact: E / A next to the game's event icon under the message window.
+    if let Some(r) = lyt::event_icon().filter(|_| !menu) {
+        let c = (r[0] + r[2] + lyt::ICON_KEY_GAP + lyt::ICON_KEY / 2.0, r[1] + r[3] / 2.0);
+        port_ui.extend(crate::actions::prompt(scheme, "E", "A", c, lyt::ICON_KEY));
+    }
     if s.cursor != Some(!menu) {
         s.cursor = Some(!menu);
         if let Some(g) = h.gfx.as_ref() {

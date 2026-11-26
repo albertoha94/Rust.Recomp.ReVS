@@ -22,6 +22,7 @@
 
 use crate::Host;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
 /// `LYT_CmpProduct::Draw`.
@@ -259,6 +260,13 @@ fn edit_screens(h: &Host, root: u32) {
     // The match scoreboard (one layout per player, 20 points apart): down
     // a little, under the header's message.
     let name = name_of(h, root);
+    if name == "MesWinAct" {
+        MES_WIN.store(root, Ordering::Relaxed);
+    }
+    if name == "MesWinItm" {
+        MES_WIN_ITEM.store(root, Ordering::Relaxed);
+    }
+    event_prompt(h, root);
     if let Some(n) = name.strip_prefix("Sub_lytScore").and_then(|n| n.parse::<i32>().ok()) {
         if (1..=4).contains(&n) {
             move_to_y(h, root, SCORE_Y + 20 * (n - 1));
@@ -402,10 +410,11 @@ fn dump(h: &Host, o: u32, depth: u32) {
         return;
     }
     println!(
-        "  {:indent$}{:?} vis={} en={} rect={:?} hit={:?} src={:?}",
+        "  {:indent$}{:?} vis={} alpha={} en={} rect={:?} hit={:?} src={:?}",
         "",
         name_of(h, o),
         h.rd8(o + 0x51),
+        h.rd32(o + 0x4c),
         h.rd8(o + 0x50),
         rect_of(h, o),
         [0, 4, 8, 12].map(|k| h.rd32(o + 0xb0 + k) as i32),
@@ -550,4 +559,88 @@ pub fn hidden_buttons() -> Vec<Btn> {
 pub fn buttons() -> Vec<Btn> {
     let guard = LISTS.lock().unwrap();
     guard.as_ref().map_or(Vec::new(), |l| l.last.clone())
+}
+
+/// The match's message windows, as last drawn: the action one
+/// (`MesWinAct`: the one-line grey bar with "Examine", "Open"...) and the
+/// item one (`MesWinItm`: "Pick up ...?" with the item's picture, 232 x 101
+/// at 124,91).
+static MES_WIN: AtomicU32 = AtomicU32::new(0);
+static MES_WIN_ITEM: AtomicU32 = AtomicU32::new(0);
+/// Where the event icon is drawn under that window (x, y, w, h), this frame.
+static EVENT_ICON: Mutex<Option<[f32; 4]>> = Mutex::new(None);
+
+/// The event icon's size under the message window (its disc is about 0.8
+/// of that; the rest is see-through), and the space above it.
+const ICON: u32 = 40;
+const ICON_GAP: u32 = 0;
+/// The port's key / button on the icon's right (actions.rs `prompt`, about
+/// as tall as the icon's disc) and the space between them.
+pub const ICON_KEY: f32 = 30.0;
+pub const ICON_KEY_GAP: f32 = 0.0;
+
+/// The interact prompt: while the action message window is up, the HUD's
+/// event button icon (`ActBtn_Event` > `Img`, its picture set by the game
+/// for the action: `Set_EveBtn`) is shown, small, centred under the window;
+/// otherwise it is back in its place and as see-through as the other touch
+/// buttons (alpha 0: "Icon Transparency", tweaks.rs). Up only while the
+/// step has an event (main.rs `event_now`), the window is shown and the
+/// game shows the button: the window's layout stays "visible" after an
+/// interaction. The picture is drawn untinted (the game greys it, +0xac
+/// 6b6b6bff; its glow, `Effect`, is white).
+fn event_prompt(h: &Host, root: u32) {
+    let Some(btn) = find(h, root, "ActBtn_Event", 0) else { return };
+    let Some(img) = find(h, btn, "Img", 0) else { return };
+    // The shown window that reaches lowest (the item one when both are up).
+    let win = [MES_WIN.load(Ordering::Relaxed), MES_WIN_ITEM.load(Ordering::Relaxed)]
+        .into_iter()
+        .filter(|&w| w != 0 && h.rd8(w + 0x51) != 0 && h.rd32(w + 0x4c) != 0)
+        .max_by_key(|&w| shown_bottom(h, w, 0).max(h.rd32(w + 0x40) + h.rd32(w + 0x48)));
+    let up = crate::event_now() && h.rd8(btn + 0x51) != 0 && h.rd8(img + 0x51) != 0;
+    let (x, y, w, hh, alpha) = if let (true, Some(win)) = (up, win) {
+        let [wx, wy, ww, wh] = [0x3c, 0x40, 0x44, 0x48].map(|k| h.rd32(win + k));
+        let total = ICON + (ICON_KEY_GAP + ICON_KEY) as u32;
+        h.wr32(img + 0xac, 0xffff_ffff);
+        let bottom = shown_bottom(h, win, 0).max(wy + wh);
+        (wx + ww / 2 - total / 2, bottom + ICON_GAP, ICON, ICON, 255)
+    } else {
+        let [bx, by, bw, bh] = [0x3c, 0x40, 0x44, 0x48].map(|k| h.rd32(btn + k));
+        (bx, by, bw, bh, 0)
+    };
+    for k in [0x30, 0x3c, 0x58, 0x64] {
+        h.wr32(img + k, x);
+    }
+    for k in [0x34, 0x40, 0x5c, 0x68] {
+        h.wr32(img + k, y);
+    }
+    for (k, v) in [(0x44, w), (0x6c, w), (0x48, hh), (0x70, hh)] {
+        h.wr32(img + k, v);
+    }
+    h.wr32(btn + 0x4c, alpha);
+    h.wr32(img + 0x4c, alpha);
+    *EVENT_ICON.lock().unwrap() = (alpha != 0).then(|| [x as f32, y as f32, w as f32, hh as f32]);
+}
+
+/// The lowest edge (y + h, points) of a part's shown pieces (visible, not
+/// see-through), below the window's own rectangle if a piece is moved.
+fn shown_bottom(h: &Host, o: u32, depth: u32) -> u32 {
+    if o == 0 || depth > 8 || h.rd8(o + 0x51) == 0 || h.rd32(o + 0x4c) == 0 {
+        return 0;
+    }
+    let mut b = if depth > 0 { h.rd32(o + 0x40).wrapping_add(h.rd32(o + 0x48)) } else { 0 };
+    if b > 320 {
+        b = 0;
+    }
+    let (n, kids) = (h.rd32(o + 0x18), h.rd32(o + 0xc));
+    if kids != 0 && n < 64 {
+        for i in 0..n {
+            b = b.max(shown_bottom(h, h.rd32(kids + 4 * i), depth + 1));
+        }
+    }
+    b
+}
+
+/// Where the interact icon is under the message window (None: no prompt).
+pub fn event_icon() -> Option<[f32; 4]> {
+    *EVENT_ICON.lock().unwrap()
 }

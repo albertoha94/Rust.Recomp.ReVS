@@ -23,6 +23,7 @@
 
 mod audio;
 mod colorui;
+mod controls;
 mod font;
 mod fs;
 mod game;
@@ -42,6 +43,7 @@ mod tweaks;
 mod net;
 mod notice;
 mod actions;
+mod player;
 mod records;
 mod os;
 mod touch;
@@ -834,7 +836,7 @@ fn trace_setup() {
         }
     }
     add_hook(MIS_DRAW);
-    for a in recolor::HOOKS.into_iter().chain(font::HOOKS).chain(records::HOOKS) {
+    for a in recolor::HOOKS.into_iter().chain(font::HOOKS).chain(records::HOOKS).chain(player::hooks()) {
         add_hook(a);
     }
     let _ = TRACED.set(traced);
@@ -867,9 +869,22 @@ static EVENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xf
 
 /// REVS_FORCE_EVENT=N (test only): every step's first Render sees event N,
 /// as if the player stood at a ladder, so the prompt can be checked anywhere.
+/// `N:F` forces it until presented frame F only.
 fn force_event() -> Option<u8> {
-    static F: std::sync::OnceLock<Option<u8>> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("REVS_FORCE_EVENT").ok().and_then(|v| v.parse().ok()))
+    static F: std::sync::OnceLock<Option<(u8, u64)>> = std::sync::OnceLock::new();
+    let (n, until) = (*F.get_or_init(|| {
+        let v = std::env::var("REVS_FORCE_EVENT").ok()?;
+        let (n, until) = v.split_once(':').unwrap_or((&v, ""));
+        Some((n.parse().ok()?, until.parse().unwrap_or(u64::MAX)))
+    }))?;
+    let frame = host().gfx.as_ref().map_or(0, |g| g.frames);
+    (frame < until).then_some(n)
+}
+
+/// The step has an event for the player (the message window's prompt:
+/// Examine, Open, Take...), as `GM_MisConduct::Draw` saw it.
+pub fn event_now() -> bool {
+    EVENT.load(std::sync::atomic::Ordering::Relaxed) != 0xff
 }
 
 /// Makes rc_trace run at the entry of game function `a` (a hook, not logged).
@@ -916,6 +931,10 @@ pub(crate) unsafe extern "C" fn rc_trace(c: *mut Cpu, addr: u32) -> i32 {
     }
     if font::HOOKS.contains(&addr) {
         font::on_enter(host(), addr, (*c).r[0]);
+    }
+    if player::is_hook(addr) {
+        let frame = host().gfx.as_ref().map_or(0, |g| g.frames);
+        player::on_enter(host(), frame, addr, [(*c).r[0], (*c).r[1], (*c).r[2], (*c).r[3]]);
     }
     if addr == RENDER {
         tweaks::each_frame(host());

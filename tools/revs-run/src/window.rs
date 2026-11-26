@@ -21,6 +21,8 @@ pub enum Input {
     Mouse(u32, f32, f32),
     /// Right mouse button down / up.
     RightMouse(bool),
+    /// The mouse wheel turned: notches, positive away from the user.
+    Wheel(i32),
     /// A key went down or up (key repeats are dropped); shift held.
     Key(sdl2::keyboard::Scancode, bool, bool),
     /// A controller button went down or up.
@@ -161,6 +163,10 @@ impl Window {
                 Event::MouseButtonUp { mouse_btn: MouseButton::Left, x, y, .. } => out.push(Input::Mouse(3, x as f32, y as f32)),
                 Event::MouseButtonDown { mouse_btn: MouseButton::Right, .. } => out.push(Input::RightMouse(true)),
                 Event::MouseButtonUp { mouse_btn: MouseButton::Right, .. } => out.push(Input::RightMouse(false)),
+                Event::MouseWheel { y, direction, .. } if y != 0 => {
+                    let flipped = direction == sdl2::mouse::MouseWheelDirection::Flipped;
+                    out.push(Input::Wheel(if flipped { -y } else { y }));
+                }
                 // Alt+Enter: full screen <-> window (not passed to the game).
                 Event::KeyDown { scancode: Some(k @ (Scancode::Return | Scancode::KpEnter)), keymod, .. }
                     if keymod.intersects(Mod::LALTMOD | Mod::RALTMOD) =>

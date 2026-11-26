@@ -18,6 +18,13 @@ pub enum Act {
     Ok,
     /// Lobby: the colour of the portrait the selection box is on.
     Colour,
+    /// Inventory commands (the game's BtnSel1-4); Use is Equip's button for
+    /// an item that isn't a weapon.
+    Equip,
+    Use,
+    Give,
+    Combine,
+    Discard,
 }
 
 impl Act {
@@ -29,6 +36,11 @@ impl Act {
             Act::Help => "Help",
             Act::Ok => "OK",
             Act::Colour => "Color",
+            Act::Equip => "Equip",
+            Act::Use => "Use",
+            Act::Give => "Give",
+            Act::Combine => "Combine",
+            Act::Discard => "Discard",
         }
     }
 
@@ -40,6 +52,10 @@ impl Act {
             Act::Help => Pad::View,
             Act::Ok => Pad::Menu,
             Act::Colour => Pad::Bumpers,
+            Act::Equip | Act::Use => Pad::Face("Y"),
+            Act::Give => Pad::Pill("RB"),
+            Act::Combine => Pad::Face("X"),
+            Act::Discard => Pad::Pill("LB"),
         }
     }
 
@@ -52,12 +68,16 @@ impl Act {
             // No key: Enter on the selected OK does it.
             Act::Ok => &[],
             Act::Colour => &["Q", "E"],
+            Act::Equip | Act::Use => &["1"],
+            Act::Give => &["2"],
+            Act::Combine => &["3"],
+            Act::Discard => &["4"],
         }
     }
 }
 
 #[derive(Clone, Copy)]
-enum Pad {
+pub(crate) enum Pad {
     /// A round face button with its letter.
     Face(&'static str),
     /// View (two overlapping windows).
@@ -66,6 +86,8 @@ enum Pad {
     Menu,
     /// LB and RB, two small pills.
     Bumpers,
+    /// One of them.
+    Pill(&'static str),
 }
 
 /// Bumper pill width (points) and the space between the two.
@@ -75,6 +97,7 @@ const PILL_GAP: f32 = 2.0;
 fn pad_w(p: Pad) -> f32 {
     match p {
         Pad::Bumpers => 2.0 * PILL_W + PILL_GAP,
+        Pad::Pill(_) => PILL_W,
         _ => PROMPT,
     }
 }
@@ -90,7 +113,7 @@ const MARGIN: f32 = 4.0;
 const TEXT: f32 = 13.0;
 const KEY_TEXT: f32 = 10.0;
 const FACE_TEXT: f32 = 12.0;
-const PROMPT: f32 = 13.0;
+pub(crate) const PROMPT: f32 = 13.0;
 /// Space inside the plate's ends, between a prompt and its label, between actions.
 const PAD_X: f32 = 6.0;
 const GAP_IN: f32 = 3.0;
@@ -150,6 +173,7 @@ pub fn frame(scheme: Scheme, acts: &[Act]) -> Vec<Ui> {
                         keycap(&mut ui, name, [x + i as f32 * (PILL_W + PILL_GAP), cy - PROMPT / 2.0 + 1.0, PILL_W, PROMPT - 2.0]);
                     }
                 }
+                Pad::Pill(name) => keycap(&mut ui, name, [x, cy - PROMPT / 2.0 + 1.0, PILL_W, PROMPT - 2.0]),
                 p => pad_prompt(&mut ui, p, (x + PROMPT / 2.0, cy)),
             },
             Scheme::Keyboard => {
@@ -173,7 +197,7 @@ pub fn frame(scheme: Scheme, acts: &[Act]) -> Vec<Ui> {
 }
 
 /// A controller button: a teal disc with a dark centre and its symbol.
-fn pad_prompt(ui: &mut Vec<Ui>, p: Pad, c: (f32, f32)) {
+pub(crate) fn pad_prompt(ui: &mut Vec<Ui>, p: Pad, c: (f32, f32)) {
     let r = PROMPT / 2.0;
     ui.push(Ui::Circle(c, r, rgba(TEAL_HI, 1.0)));
     ui.push(Ui::Circle(c, r - 1.2, INK));
@@ -191,7 +215,7 @@ fn pad_prompt(ui: &mut Vec<Ui>, p: Pad, c: (f32, f32)) {
                 ui.push(Ui::Frame(f, TEAL_HI, 0.8));
             }
         }
-        Pad::Bumpers => {}
+        Pad::Bumpers | Pad::Pill(_) => {}
         Pad::Menu => {
             for dy in [-1.8, 0.0, 1.8] {
                 ui.push(Ui::Rect([c.0 - 2.6, c.1 + dy - 0.45, 5.2, 0.9], hi));
@@ -201,7 +225,7 @@ fn pad_prompt(ui: &mut Vec<Ui>, p: Pad, c: (f32, f32)) {
 }
 
 /// A key: a teal keycap with its name.
-fn keycap(ui: &mut Vec<Ui>, name: &str, r: [f32; 4]) {
+pub(crate) fn keycap(ui: &mut Vec<Ui>, name: &str, r: [f32; 4]) {
     ui.push(Ui::RoundRect(r, 2.5, rgba(TEAL_HI, 1.0), rgba(TEAL, 1.0)));
     ui.push(Ui::RoundRect([r[0] + 1.0, r[1] + 1.0, r[2] - 2.0, r[3] - 2.5], 1.8, [0.05, 0.15, 0.14, 1.0], INK));
     let w = label_width(name, KEY_TEXT);
@@ -222,4 +246,20 @@ mod tests {
         assert!(frame(Scheme::Keyboard, &[Act::Ok]).is_empty());
         assert!(!frame(Scheme::Controller, &[Act::Ok]).is_empty());
     }
+}
+
+/// One key or button prompt in the bar's style, `size` points tall,
+/// centred on `c` (the interact prompt under the match's message window,
+/// lyt.rs `event_icon`): drawn at the bar's size and scaled up.
+pub fn prompt(scheme: Scheme, key: &str, face: &'static str, c: (f32, f32), size: f32) -> Vec<Ui> {
+    let mut ui = Vec::new();
+    match scheme {
+        Scheme::Controller => pad_prompt(&mut ui, Pad::Face(face), (0.0, 0.0)),
+        Scheme::Keyboard => {
+            let w = key_w(key);
+            keycap(&mut ui, key, [-w / 2.0, -PROMPT / 2.0, w, PROMPT]);
+        }
+    }
+    let k = size / PROMPT;
+    ui.into_iter().map(|u| u.scaled(k, c)).collect()
 }

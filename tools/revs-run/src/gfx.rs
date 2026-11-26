@@ -99,6 +99,51 @@ pub enum Ui {
     /// Filled polygon (any simple outline, either winding), RGBA at its top
     /// and at its bottom (a vertical gradient).
     Poly(Vec<(f32, f32)>, [f32; 4], [f32; 4]),
+    /// A picture from the game's action icon sheet (textures.rs `icon_tex`;
+    /// nothing if it isn't uploaded): where (x, y, w, h), the sheet's part
+    /// (texels: x, y, w, h), opacity.
+    Icon([f32; 4], [f32; 4], f32),
+}
+
+impl Ui {
+    /// The same shape with its opacity times `a` (for fades). Discs and
+    /// triangles (RGB) become their RGBA equivalents; outlines can't fade.
+    pub fn faded(self, a: f32) -> Ui {
+        let f = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * a];
+        let g = |c: [f32; 3]| [c[0], c[1], c[2], a];
+        match self {
+            Ui::Rect(r, c) => Ui::Rect(r, f(c)),
+            // An outline has no opacity: kept as it is.
+            Ui::Frame(r, c, w) => Ui::Frame(r, c, w),
+            Ui::Disc(c, r, fill, _) => Ui::Circle(c, r, g(fill)),
+            Ui::Tri(t, c) => Ui::Poly(t.to_vec(), g(c), g(c)),
+            Ui::Text(o, t, d, c) => Ui::Text(o, t, d, f(c)),
+            Ui::RoundRect(r, rad, top, bottom) => Ui::RoundRect(r, rad, f(top), f(bottom)),
+            Ui::Circle(c, r, col) => Ui::Circle(c, r, f(col)),
+            Ui::Label(o, t, h, c) => Ui::Label(o, t, h, f(c)),
+            Ui::Poly(v, top, bottom) => Ui::Poly(v, f(top), f(bottom)),
+            Ui::Icon(r, src, o) => Ui::Icon(r, src, o * a),
+        }
+    }
+
+    /// The same shape `k` times as big, its points measured from (0, 0) and
+    /// placed around `at`.
+    pub fn scaled(self, k: f32, at: (f32, f32)) -> Ui {
+        let p = |(x, y): (f32, f32)| (at.0 + x * k, at.1 + y * k);
+        let r = |q: [f32; 4]| [at.0 + q[0] * k, at.1 + q[1] * k, q[2] * k, q[3] * k];
+        match self {
+            Ui::Rect(q, c) => Ui::Rect(r(q), c),
+            Ui::Frame(q, c, w) => Ui::Frame(r(q), c, w * k),
+            Ui::Disc(c, rad, f, rim) => Ui::Disc(p(c), rad * k, f, rim),
+            Ui::Tri(t, c) => Ui::Tri(t.map(p), c),
+            Ui::Text(o, t, d, c) => Ui::Text(p(o), t, d * k, c),
+            Ui::RoundRect(q, rad, a, b) => Ui::RoundRect(r(q), rad * k, a, b),
+            Ui::Circle(c, rad, col) => Ui::Circle(p(c), rad * k, col),
+            Ui::Label(o, t, hgt, c) => Ui::Label(p(o), t, hgt * k, c),
+            Ui::Poly(v, a, b) => Ui::Poly(v.into_iter().map(p).collect(), a, b),
+            Ui::Icon(q, src, o) => Ui::Icon(r(q), src, o),
+        }
+    }
 }
 
 /// Triangles covering a simple polygon (ear clipping), as index triples.
@@ -344,6 +389,26 @@ unsafe fn draw_ui(items: &[Ui]) {
                     }
                     gl::End();
                 }
+                gl::Disable(gl::BLEND);
+                gl::Disable(gl::TEXTURE_2D);
+            }
+            Ui::Icon([x, y, w, h], [sx, sy, sw, sh], o) => {
+                let Some(tex) = crate::textures::icon_tex() else { continue };
+                // The sheet's texels, whatever size it was uploaded at.
+                let (u0, v0, u1, v1) = (sx / 512.0, sy / 512.0, (sx + sw) / 512.0, (sy + sh) / 512.0);
+                gl::Enable(gl::TEXTURE_2D);
+                gl::BindTexture(gl::TEXTURE_2D, tex);
+                gl::TexEnvi(gl::TEXTURE_ENV, gl::TEXTURE_ENV_MODE, gl::MODULATE as _);
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::Color4f(1.0, 1.0, 1.0, *o);
+                gl::Begin(gl::QUADS);
+                for (px, py, u, v) in [(*x, *y, u0, v0), (x + w, *y, u1, v0), (x + w, y + h, u1, v1), (*x, y + h, u0, v1)] {
+                    gl::TexCoord2f(u, v);
+                    let (vx, vy) = ndc(px, py);
+                    gl::Vertex2f(vx, vy);
+                }
+                gl::End();
                 gl::Disable(gl::BLEND);
                 gl::Disable(gl::TEXTURE_2D);
             }

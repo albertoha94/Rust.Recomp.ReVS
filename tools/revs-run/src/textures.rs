@@ -125,6 +125,7 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
     forget_art(tex);
     forget_logo(tex);
     let _ = FONT_TEX.compare_exchange(tex, 0, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+    let _ = ICON_TEX.compare_exchange(tex, 0, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
     if st.replaced.remove(&tex) {
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::GENERATE_MIPMAP, gl21::FALSE as _);
         gl21::TexParameteri(gl21::TEXTURE_2D, gl21::TEXTURE_MIN_FILTER, gl21::LINEAR as _);
@@ -205,6 +206,9 @@ pub unsafe fn on_upload(g: &mut dyn GLES, target: u32, level: i32, fmt: u32, typ
     }
     if key == MENU_FONT {
         FONT_TEX.store(tex, std::sync::atomic::Ordering::Relaxed);
+    }
+    if key == ICON_SHEET {
+        ICON_TEX.store(tex, std::sync::atomic::Ordering::Relaxed);
     }
     if key == LOGO_SHEET {
         logo_sheet_uploaded(tex, tex_w / w);
@@ -334,6 +338,18 @@ static FONT_TEX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::ne
 /// The GL texture of the game's menu font, if uploaded.
 pub fn font_tex() -> Option<u32> {
     Some(FONT_TEX.load(std::sync::atomic::Ordering::Relaxed)).filter(|&t| t != 0)
+}
+
+/// The game's action icon sheet (512 x 512, 64-texel round icons: the HUD's
+/// event button pictures, the menus' "?" at 192,0...), up in menus and
+/// matches alike.
+const ICON_SHEET: u64 = 0x10cd8e16b58af475;
+/// Its GL texture name (0: not uploaded, or deleted).
+static ICON_TEX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The GL texture of the game's action icon sheet, if uploaded.
+pub fn icon_tex() -> Option<u32> {
+    Some(ICON_TEX.load(std::sync::atomic::Ordering::Relaxed)).filter(|&t| t != 0)
 }
 
 /// The character select sheet as uploaded (after any enlarging): the port
