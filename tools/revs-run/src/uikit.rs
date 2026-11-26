@@ -64,6 +64,19 @@ pub struct Ui {
     /// (time, k of n) of the in-between Render() calls still to do.
     pub extra_at: Vec<(f64, u32, u32)>,
     pub log: Vec<String>,
+    /// Game speed, for the end-of-run summary: onTick steps run, the time and
+    /// interval of the first, seconds of steps lost (the game re-arms a
+    /// one-shot timer each step, minus the time the step took, so a step that
+    /// starts late is never made up), in-between frames skipped.
+    pub steps: u64,
+    pub first_step: Option<(f64, f64)>,
+    pub lost: f64,
+    /// Seconds steps ran past their interval (loading happens inside a step).
+    pub long_steps: f64,
+    pub extras_skipped: u64,
+    /// Seconds an in-between frame takes, vsync wait included (rises at once,
+    /// falls slowly), to tell whether one still fits before the next step.
+    pub frame_cost: f64,
 }
 
 impl Ui {
@@ -84,6 +97,12 @@ impl Ui {
             stop: false,
             extra_at: Vec::new(),
             log: Vec::new(),
+            steps: 0,
+            first_step: None,
+            lost: 0.0,
+            extras_skipped: 0,
+            long_steps: 0.0,
+            frame_cost: 0.0,
         }
     }
     pub fn now(&self) -> f64 {
@@ -258,11 +277,29 @@ pub fn run_loop(h: &mut Host, c: &mut Cpu) {
         let now = h.ui.now();
         let mut next = now + 0.25;
         let mut fired = false;
+        // In-between frames never hold up a game step: one is drawn only if it
+        // should be done before the next step is due, else the ones still
+        // waiting are dropped. Each frame waits for the screen's refresh
+        // (vsync), so on a screen under 60 Hz, or a PC that takes longer than
+        // ~16 ms a frame, three frames per 50 ms step don't fit, and every step
+        // would start late: the game would run slower than real time.
         if h.ui.extra_at.first().is_some_and(|e| e.0 <= now) {
-            let (_, k, n) = h.ui.extra_at.remove(0);
-            crate::interp::set_between(k, n);
-            extra_render(h, c);
-            fired = true;
+            let due = h.ui.timers.iter().filter(|t| t.valid && t.scheduled).map(|t| t.next).fold(f64::INFINITY, f64::min);
+            // 5 ms of slack: at 60 Hz the second frame ends right as the step
+            // is due, and the step's own frame waits for that refresh anyway.
+            if now + h.ui.frame_cost > due + 0.005 {
+                h.ui.extras_skipped += h.ui.extra_at.len() as u64;
+                h.ui.extra_at.clear();
+                // So a screen that got faster gets its in-between frames back.
+                h.ui.frame_cost *= 0.98;
+            } else {
+                let (_, k, n) = h.ui.extra_at.remove(0);
+                crate::interp::set_between(k, n);
+                extra_render(h, c);
+                let took = h.ui.now() - now;
+                h.ui.frame_cost = if took > h.ui.frame_cost { took } else { h.ui.frame_cost * 0.8 + took * 0.2 };
+                fired = true;
+            }
         }
         if let Some(&(t, _, _)) = h.ui.extra_at.first() {
             next = next.min(t);
@@ -275,21 +312,28 @@ pub fn run_loop(h: &mut Host, c: &mut Cpu) {
                 continue;
             }
             if t.next <= now {
-                let (obj, target, s) = (t.obj, t.target, t.sel);
+                let (obj, target, s, interval) = (t.obj, t.target, t.sel, t.interval);
+                let mut lost = now - t.next;
                 if t.repeats {
-                    t.next = (t.next + t.interval.max(0.001)).max(now);
+                    let due = t.next + t.interval.max(0.001);
+                    lost = (now - due).max(0.0);
+                    t.next = due.max(now);
                 } else {
                     t.valid = false;
                 }
                 let sn = objc::sel_name(h, s);
                 let tick = sn == "onTick";
                 if tick {
+                    h.ui.steps += 1;
+                    h.ui.first_step.get_or_insert((now, interval));
+                    h.ui.lost += lost;
                     crate::interp::begin_step();
                 }
                 send(h, c, target, &sn, &[obj]);
                 fired = true;
                 crate::render_diff(h, c);
                 if tick {
+                    h.ui.long_steps += (h.ui.now() - now - interval).max(0.0);
                     crate::interp::end_step();
                     plan_extra_renders(h);
                 }
@@ -300,6 +344,9 @@ pub fn run_loop(h: &mut Host, c: &mut Cpu) {
                 }
             }
         }
+        // Fired one-shot and invalidated timers are gone for good (else the
+        // list grows by 20 a second and every pass of this loop walks it).
+        h.ui.timers.retain(|t| t.valid);
         if !fired {
             // Nothing to do for 10 seconds with no timer: the game is waiting
             // for something this runner doesn't do yet.
@@ -314,6 +361,22 @@ pub fn run_loop(h: &mut Host, c: &mut Cpu) {
             idle_since = None;
         }
     }
+    speed_summary(h);
+}
+
+/// End-of-run line on the game's speed: how much of real time the 20 steps a
+/// second kept up with (a "slow motion" report shows here as under 100 %).
+fn speed_summary(h: &mut Host) {
+    let Some((first, interval)) = h.ui.first_step else { return };
+    let secs = h.ui.now() - first;
+    if secs < 1.0 {
+        return;
+    }
+    let pct = (h.ui.steps as f64 * interval / secs * 100.0).min(100.0);
+    h.ui.log.push(format!(
+        "game speed: {} steps in {secs:.1} s ({pct:.0} % of full speed; {:.1} s lost to steps starting late, {:.1} s to steps longer than {:.0} ms, as when loading); {} in-between frames skipped to keep up",
+        h.ui.steps, h.ui.lost, h.ui.long_steps, interval * 1000.0, h.ui.extras_skipped
+    ));
 }
 
 /// After each game step (onTick), crate::extra_frames() more Render() calls

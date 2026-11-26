@@ -1,6 +1,6 @@
 [package]
 name = "revs-run"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Runs the recompiled game natively from the user's own .ipa (Phase 3)"
 
